@@ -1,0 +1,28 @@
+{
+  "name": "platepoint-pos",
+  "version": "0.1.0",
+  "description": "PlatePoint POS — a Toast-style restaurant point-of-sale (backend + frontend) with Stripe test-mode payments.",
+  "type": "module",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "migrate": "node src/migrate.js",
+    "seed": "node src/seed.js",
+    "test": "node test/store.test.mjs && node test/api.test.mjs"
+  },
+  "engines": { "node": ">=18" },
+  "dependencies": {
+    "express": "^4.19.2",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "stripe": "^16.2.0",
+    "nanoid": "^5.0.7",
+    "bcryptjs": "^2.4.3",
+    "jsonwebtoken": "^9.0.2",
+    "pg": "^8.12.0"
+  },
+  "devDependencies": {
+    "pg-mem": "^3.0.2"
+  }
+}
