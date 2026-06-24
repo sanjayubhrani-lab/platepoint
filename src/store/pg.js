@@ -10,7 +10,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // ---- row mappers (snake_case DB → camelCase app objects) ----
 const num = v => (v == null ? v : Number(v));
 const mMenu = r => ({ id: r.id, category: r.category, name: r.name, price: num(r.price), emoji: r.emoji,
-  image: r.image ?? null, sortOrder: num(r.sort_order) || 0, active: r.active });
+  image: r.image ?? null, sortOrder: num(r.sort_order) || 0, modifierGroups: r.modifier_groups ?? [], active: r.active });
 const mTable = r => ({ number: num(r.number), status: r.status, orderId: r.order_id });
 const mOrder = r => ({ id: r.id, number: num(r.number), table: r.table_no == null ? null : num(r.table_no),
   lines: r.lines, subtotal: num(r.subtotal), tax: num(r.tax), total: num(r.total),
@@ -55,6 +55,7 @@ export async function makePgStore(poolOverride) {
         'ALTER TABLE orders ADD COLUMN platform TEXT',
         'ALTER TABLE orders ADD COLUMN customer TEXT',
         'ALTER TABLE orders ADD COLUMN external_id TEXT',
+        "ALTER TABLE menu ADD COLUMN modifier_groups JSONB DEFAULT '[]'",
       ];
       for (const u of upgrades) { try { await q(u); } catch { /* column already present */ } }
     },
@@ -63,8 +64,8 @@ export async function makePgStore(poolOverride) {
       for (const t of ['menu', 'tables', 'orders', 'payments', 'users', 'staff'])
         await q(`DELETE FROM ${t}`);
       for (const m of menu)
-        await q('INSERT INTO menu(id,category,name,price,emoji,image,sort_order,active) VALUES($1,$2,$3,$4,$5,$6,$7,$8)',
-          [m.id, m.category, m.name, m.price, m.emoji, m.image ?? null, m.sortOrder ?? 0, m.active]);
+        await q('INSERT INTO menu(id,category,name,price,emoji,image,sort_order,modifier_groups,active) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)',
+          [m.id, m.category, m.name, m.price, m.emoji, m.image ?? null, m.sortOrder ?? 0, JSON.stringify(m.modifierGroups ?? []), m.active]);
       for (const t of tables)
         await q('INSERT INTO tables(number,status,order_id) VALUES($1,$2,$3)', [t.number, t.status, t.orderId]);
       for (const s of staff)
@@ -76,15 +77,15 @@ export async function makePgStore(poolOverride) {
     // menu
     async listMenu() { return (await q('SELECT * FROM menu ORDER BY sort_order, category, name')).rows.map(mMenu); },
     async createMenuItem(i) {
-      await q('INSERT INTO menu(id,category,name,price,emoji,image,sort_order,active) VALUES($1,$2,$3,$4,$5,$6,$7,$8)',
-        [i.id, i.category, i.name, i.price, i.emoji, i.image ?? null, i.sortOrder ?? 0, i.active]);
+      await q('INSERT INTO menu(id,category,name,price,emoji,image,sort_order,modifier_groups,active) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)',
+        [i.id, i.category, i.name, i.price, i.emoji, i.image ?? null, i.sortOrder ?? 0, JSON.stringify(i.modifierGroups ?? []), i.active]);
       return i;
     },
     async updateMenuItem(id, patch) {
       const cur = (await q('SELECT * FROM menu WHERE id=$1', [id])).rows[0];
       if (!cur) return null; const n = { ...mMenu(cur), ...patch };
-      await q('UPDATE menu SET category=$2,name=$3,price=$4,emoji=$5,image=$6,sort_order=$7,active=$8 WHERE id=$1',
-        [id, n.category, n.name, n.price, n.emoji, n.image ?? null, n.sortOrder ?? 0, n.active]);
+      await q('UPDATE menu SET category=$2,name=$3,price=$4,emoji=$5,image=$6,sort_order=$7,modifier_groups=$8,active=$9 WHERE id=$1',
+        [id, n.category, n.name, n.price, n.emoji, n.image ?? null, n.sortOrder ?? 0, JSON.stringify(n.modifierGroups ?? []), n.active]);
       return n;
     },
     async deleteMenuItem(id) { await q('DELETE FROM menu WHERE id=$1', [id]); },
