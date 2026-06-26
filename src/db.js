@@ -17,7 +17,8 @@ const DEFAULTS = {
   tenants: [],     // {id, name, slug, plan, createdAt}  — businesses on the platform
   inventory: [],   // {id, name, unit, qty, parLevel, cost, tenantId}  — stock / ingredients
   customers: [],   // {id, name, phone, points, visits, totalSpent, tenantId, createdAt}  — loyalty members
-  giftcards: []    // {id, code, balance, initialBalance, active, tenantId, createdAt}  — gift cards
+  giftcards: [],   // {id, code, balance, initialBalance, active, tenantId, createdAt}  — gift cards
+  drawers: []      // {id, openedBy, openedAt, startingFloat, paidIn, paidOut, status, ...}  — cash drawer sessions
 };
 
 function ensureFile() {
