@@ -23,7 +23,7 @@ export function verifyPin(pin, hash) {
 
 export function issueToken(user) {
   return jwt.sign(
-    { id: user.id, name: user.name, role: user.role, tenantId: user.tenantId || 'default', tenantSlug: user.tenantSlug || 'default', tenantName: user.tenantName || 'Tavo' },
+    { id: user.id, name: user.name, role: user.role, tenantId: user.tenantId || 'default', tenantSlug: user.tenantSlug || 'default', tenantName: user.tenantName || 'Tavo', tenantMode: user.tenantMode || 'restaurant' },
     SECRET,
     { expiresIn: TOKEN_TTL }
   );

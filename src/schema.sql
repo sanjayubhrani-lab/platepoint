@@ -4,6 +4,7 @@ CREATE TABLE IF NOT EXISTS tenants (
   name       TEXT,
   slug       TEXT UNIQUE,
   plan       TEXT DEFAULT 'free',
+  mode       TEXT DEFAULT 'restaurant',
   created_at BIGINT
 );
 
@@ -17,6 +18,10 @@ CREATE TABLE IF NOT EXISTS menu (
   sort_order INTEGER DEFAULT 0,
   modifier_groups JSONB DEFAULT '[]',
   recipe     JSONB DEFAULT '[]',
+  sku        TEXT,
+  barcode    TEXT,
+  stock      NUMERIC(12,3),
+  track_stock BOOLEAN DEFAULT FALSE,
   tenant_id  TEXT DEFAULT 'default',
   active     BOOLEAN DEFAULT TRUE
 );

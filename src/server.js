@@ -106,6 +106,19 @@ async function depleteForOrder(order, tenantId = DEFAULT_TENANT) {
   } catch (e) { console.error('inventory depletion skipped:', e.message); }
 }
 
+// Retail: decrement a product's own stock when it's sold (for trackStock items).
+async function depleteProductStock(lines, tenantId = DEFAULT_TENANT) {
+  try {
+    const menu = await store.listMenu(tenantId);
+    const byId = new Map(menu.map(m => [m.id, m]));
+    const byName = new Map(menu.map(m => [m.name, m]));
+    for (const l of (lines || [])) {
+      const p = byId.get(l.id) || byName.get(l.name);
+      if (p && p.trackStock) await store.adjustMenuStock(p.id, -(Number(l.qty) || 1));
+    }
+  } catch (e) { console.error('product stock depletion skipped:', e.message); }
+}
+
 // Sum the ingredient cost of an order's lines (for food-cost reporting).
 function orderFoodCost(lines, recipeOf, costOf) {
   let c = 0;
@@ -134,7 +147,8 @@ app.post('/api/tenants', h(async (req, res) => {
   if (!cleanSlug) return res.status(400).json({ error: 'invalid slug' });
   if (cleanSlug === DEFAULT_TENANT || await store.getTenantBySlug(cleanSlug))
     return res.status(409).json({ error: 'that address is taken' });
-  const tenant = { id: nanoid(10), name: String(name), slug: cleanSlug, plan: 'free', createdAt: Date.now() };
+  const mode = ['restaurant', 'retail'].includes(req.body.mode) ? req.body.mode : 'restaurant';
+  const tenant = { id: nanoid(10), name: String(name), slug: cleanSlug, plan: 'free', mode, createdAt: Date.now() };
   await store.createTenant(tenant);
   // Seed this tenant's own starter menu/tables/staff/users/inventory (stamped with its id).
   const data = buildSeedData();
@@ -154,17 +168,20 @@ app.post('/api/tenants', h(async (req, res) => {
 app.post('/api/auth/login', h(async (req, res) => {
   const { pin, tenant } = req.body;
   if (!pin) return res.status(400).json({ error: 'PIN required' });
-  let tenantId = DEFAULT_TENANT, tenantSlug = DEFAULT_TENANT, tenantName = 'Tavo';
+  let tenantId = DEFAULT_TENANT, tenantSlug = DEFAULT_TENANT, tenantName = 'Tavo', tenantMode = 'restaurant';
   if (tenant && tenant !== DEFAULT_TENANT) {
     const tt = await store.getTenantBySlug(String(tenant));
     if (!tt) return res.status(404).json({ error: 'unknown business' });
-    tenantId = tt.id; tenantSlug = tt.slug; tenantName = tt.name;
+    tenantId = tt.id; tenantSlug = tt.slug; tenantName = tt.name; tenantMode = tt.mode || 'restaurant';
+  } else {
+    const def = await store.getTenant(DEFAULT_TENANT);
+    if (def && def.mode) tenantMode = def.mode;
   }
   const users = await store.listUsers(tenantId);
   const user = users.find(u => verifyPin(pin, u.pinHash));
   if (!user) return res.status(401).json({ error: 'Invalid PIN' });
-  const token = issueToken({ ...user, tenantId, tenantSlug, tenantName });
-  res.json({ token, user: { id: user.id, name: user.name, role: user.role, tenantId, tenantSlug, tenantName, routes: ROLE_ROUTES[user.role] || [] } });
+  const token = issueToken({ ...user, tenantId, tenantSlug, tenantName, tenantMode });
+  res.json({ token, user: { id: user.id, name: user.name, role: user.role, tenantId, tenantSlug, tenantName, tenantMode, routes: ROLE_ROUTES[user.role] || [] } });
 }));
 
 app.get('/api/auth/me', requireAuth, (req, res) =>
@@ -285,8 +302,30 @@ app.post('/api/guest/pay/complete', h(async (req, res) => {
 // ---- menu ----
 app.get('/api/menu', requireAuth, h(async (req, res) => res.json(await store.listMenu(tid(req)))));
 
+// Retail: look up a product by scanned barcode or typed SKU.
+app.get('/api/products/lookup', requireAuth, h(async (req, res) => {
+  if (!req.query.code) return res.status(400).json({ error: 'code required' });
+  const p = await store.findProductByCode(req.query.code, tid(req));
+  p ? res.json(p) : res.status(404).json({ error: 'no product with that code' });
+}));
+
+// ---- tenant / business mode (retail vs restaurant) ----
+app.get('/api/tenant', requireAuth, h(async (req, res) => {
+  const t = await store.getTenant(tid(req));
+  res.json(t ? { id: t.id, name: t.name, slug: t.slug, mode: t.mode || 'restaurant' } : { id: DEFAULT_TENANT, name: 'Tavo', slug: DEFAULT_TENANT, mode: 'restaurant' });
+}));
+
+app.put('/api/tenant', requireAuth, requireRole('manager'), h(async (req, res) => {
+  const patch = {};
+  if (req.body.mode && ['restaurant', 'retail'].includes(req.body.mode)) patch.mode = req.body.mode;
+  if (req.body.name) patch.name = String(req.body.name);
+  const t = await store.updateTenant(tid(req), patch);
+  if (!t) return res.status(404).json({ error: 'business not found' });
+  res.json({ id: t.id, name: t.name, slug: t.slug, mode: t.mode || 'restaurant' });
+}));
+
 app.post('/api/menu', requireAuth, requireRole('manager'), h(async (req, res) => {
-  const { category, name, price, emoji, image, sortOrder, modifierGroups, recipe } = req.body;
+  const { category, name, price, emoji, image, sortOrder, modifierGroups, recipe, sku, barcode, stock, trackStock } = req.body;
   if (!name || price == null) return res.status(400).json({ error: 'name and price required' });
   const existing = await store.listMenu(tid(req));
   const item = {
@@ -295,6 +334,8 @@ app.post('/api/menu', requireAuth, requireRole('manager'), h(async (req, res) =>
     sortOrder: sortOrder != null ? Number(sortOrder) : existing.length,
     modifierGroups: Array.isArray(modifierGroups) ? modifierGroups : [],
     recipe: Array.isArray(recipe) ? recipe : [],
+    sku: sku ? String(sku) : null, barcode: barcode ? String(barcode) : null,
+    stock: stock != null && stock !== '' ? Number(stock) : null, trackStock: !!trackStock,
     tenantId: tid(req), active: true,
   };
   await store.createMenuItem(item);
@@ -395,6 +436,7 @@ app.post('/api/payments/complete', requireAuth, requireRole('manager', 'server')
     tenantId: tid(req), createdAt: Date.now(),
   };
   await store.createPayment(payment);
+  await depleteProductStock(lines, tid(req));   // retail: decrement product stock for tracked SKUs
   if (orderId) await store.updateOrder(orderId, { status: 'paid' });
   if (table) await store.setTableStatus(table, 'open', null, tid(req));
   res.status(201).json({ ...payment, pointsBalance: member ? (await store.getCustomer(member.id)).points : null });
