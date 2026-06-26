@@ -12,8 +12,9 @@ const DEFAULTS = {
   orders: [],      // {id, table, lines, status, createdAt}
   payments: [],    // {id, orderId, subtotal, tax, tip, total, method, status, stripeId, createdAt}
   tables: [],      // {number, status, orderId}
-  staff: [],       // {id, name, role, clockedInAt}
-  users: []        // {id, name, role, pinHash}  — login accounts
+  staff: [],       // {id, name, role, clockedInAt, tenantId}
+  users: [],       // {id, name, role, pinHash, tenantId}  — login accounts
+  tenants: []      // {id, name, slug, plan, createdAt}  — businesses on the platform
 };
 
 function ensureFile() {

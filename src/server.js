@@ -7,7 +7,7 @@ import { nanoid } from 'nanoid';
 import { getStore, storeKind } from './store/index.js';
 import { buildSeedData } from './seedData.js';
 import { createPaymentIntent, retrieveStatus, createRefund, usingStripe, stripeClient, paymentGateway, publishableKey } from './payments.js';
-import { verifyPin, issueToken, requireAuth, requireRole, ROLE_ROUTES } from './auth.js';
+import { verifyPin, hashPin, issueToken, requireAuth, requireRole, ROLE_ROUTES } from './auth.js';
 import { normalizeIncoming, exportMenu } from './integrations.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -22,6 +22,11 @@ let store;
 const h = fn => (req, res) => fn(req, res).catch(e => {
   console.error(e); res.status(500).json({ error: e.message });
 });
+
+// Resolve the tenant for a request from its auth token (defaults to the single
+// 'default' tenant, so a one-store deployment behaves exactly as before).
+const DEFAULT_TENANT = 'default';
+const tid = req => (req && req.user && req.user.tenantId) || DEFAULT_TENANT;
 
 app.use(cors());
 
@@ -81,33 +86,58 @@ app.get('/api/config', (req, res) => res.json({
   taxRate: TAX_RATE,
 }));
 
+// ---- tenant signup (multi-tenant) ----
+app.post('/api/tenants', h(async (req, res) => {
+  const { name, slug, managerPin } = req.body;
+  if (!name || !slug) return res.status(400).json({ error: 'business name and slug required' });
+  const cleanSlug = String(slug).toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/^-+|-+$/g, '');
+  if (!cleanSlug) return res.status(400).json({ error: 'invalid slug' });
+  if (cleanSlug === DEFAULT_TENANT || await store.getTenantBySlug(cleanSlug))
+    return res.status(409).json({ error: 'that address is taken' });
+  const tenant = { id: nanoid(10), name: String(name), slug: cleanSlug, plan: 'free', createdAt: Date.now() };
+  await store.createTenant(tenant);
+  // Seed this tenant's own starter menu/tables/staff/users (stamped with its id).
+  const data = buildSeedData();
+  const pin = String(managerPin || '1234');
+  for (const arr of [data.menu, data.tables, data.staff, data.users]) arr.forEach(x => { x.tenantId = tenant.id; });
+  const mgr = data.users.find(u => u.role === 'manager'); if (mgr) mgr.pinHash = hashPin(pin);
+  await store.seedTenant(data);
+  res.status(201).json({ tenant: { id: tenant.id, name: tenant.name, slug: cleanSlug }, managerPin: pin, loginHint: `log in with ?tenant=${cleanSlug}` });
+}));
+
 // ---- auth ----
 app.post('/api/auth/login', h(async (req, res) => {
-  const { pin } = req.body;
+  const { pin, tenant } = req.body;
   if (!pin) return res.status(400).json({ error: 'PIN required' });
-  const users = await store.listUsers();
+  let tenantId = DEFAULT_TENANT;
+  if (tenant && tenant !== DEFAULT_TENANT) {
+    const tt = await store.getTenantBySlug(String(tenant));
+    if (!tt) return res.status(404).json({ error: 'unknown business' });
+    tenantId = tt.id;
+  }
+  const users = await store.listUsers(tenantId);
   const user = users.find(u => verifyPin(pin, u.pinHash));
   if (!user) return res.status(401).json({ error: 'Invalid PIN' });
-  const token = issueToken(user);
-  res.json({ token, user: { id: user.id, name: user.name, role: user.role, routes: ROLE_ROUTES[user.role] || [] } });
+  const token = issueToken({ ...user, tenantId });
+  res.json({ token, user: { id: user.id, name: user.name, role: user.role, tenantId, routes: ROLE_ROUTES[user.role] || [] } });
 }));
 
 app.get('/api/auth/me', requireAuth, (req, res) =>
   res.json({ ...req.user, routes: ROLE_ROUTES[req.user.role] || [] }));
 
 // ---- menu ----
-app.get('/api/menu', requireAuth, h(async (req, res) => res.json(await store.listMenu())));
+app.get('/api/menu', requireAuth, h(async (req, res) => res.json(await store.listMenu(tid(req)))));
 
 app.post('/api/menu', requireAuth, requireRole('manager'), h(async (req, res) => {
   const { category, name, price, emoji, image, sortOrder, modifierGroups } = req.body;
   if (!name || price == null) return res.status(400).json({ error: 'name and price required' });
-  const existing = await store.listMenu();
+  const existing = await store.listMenu(tid(req));
   const item = {
     id: nanoid(8), category: category || 'Other', name, price: Number(price),
     emoji: emoji || '🍽️', image: image || null,
     sortOrder: sortOrder != null ? Number(sortOrder) : existing.length,
     modifierGroups: Array.isArray(modifierGroups) ? modifierGroups : [],
-    active: true,
+    tenantId: tid(req), active: true,
   };
   await store.createMenuItem(item);
   res.status(201).json(item);
@@ -131,21 +161,21 @@ app.delete('/api/menu/:id', requireAuth, requireRole('manager'), h(async (req, r
 }));
 
 // ---- tables ----
-app.get('/api/tables', requireAuth, h(async (req, res) => res.json(await store.listTables())));
+app.get('/api/tables', requireAuth, h(async (req, res) => res.json(await store.listTables(tid(req)))));
 
 // ---- orders ----
 app.get('/api/orders', requireAuth, h(async (req, res) => {
-  res.json(await store.listOrders(req.query.status));
+  res.json(await store.listOrders(req.query.status, tid(req)));
 }));
 
 app.post('/api/orders', requireAuth, h(async (req, res) => {
   const { lines = [], table = null } = req.body;
   if (!lines.length) return res.status(400).json({ error: 'order has no items' });
   const totals = priceLines(lines);
-  const count = await store.countOrders();
-  const order = { id: nanoid(10), number: 1000 + count + 1, table, lines, ...totals, status: 'open', createdAt: Date.now() };
+  const count = await store.countOrders(tid(req));
+  const order = { id: nanoid(10), number: 1000 + count + 1, table, lines, ...totals, status: 'open', tenantId: tid(req), createdAt: Date.now() };
   await store.createOrder(order);
-  if (table) await store.setTableStatus(table, 'seated', order.id);
+  if (table) await store.setTableStatus(table, 'seated', order.id, tid(req));
   res.status(201).json(order);
 }));
 
@@ -180,15 +210,15 @@ app.post('/api/payments/complete', requireAuth, requireRole('manager', 'server')
   const payment = {
     id: nanoid(10), orderId, table, lines, ...totals, tip: Number(tip || 0), total,
     method, status, stripeId: intentId || null, confirmed: false,
-    refundedAmount: 0, refundedAt: null, createdAt: Date.now(),
+    refundedAmount: 0, refundedAt: null, tenantId: tid(req), createdAt: Date.now(),
   };
   await store.createPayment(payment);
   if (orderId) await store.updateOrder(orderId, { status: 'paid' });
-  if (table) await store.setTableStatus(table, 'open', null);
+  if (table) await store.setTableStatus(table, 'open', null, tid(req));
   res.status(201).json(payment);
 }));
 
-app.get('/api/payments', requireAuth, h(async (req, res) => res.json(await store.listPayments())));
+app.get('/api/payments', requireAuth, h(async (req, res) => res.json(await store.listPayments(tid(req)))));
 
 // Refund a payment (full or partial). Manager only.
 app.post('/api/payments/:id/refund', requireAuth, requireRole('manager'), h(async (req, res) => {
@@ -215,14 +245,14 @@ app.post('/api/orders/:id/void', requireAuth, requireRole('manager', 'server'), 
   if (!order) return res.status(404).json({ error: 'order not found' });
   if (order.status === 'paid') return res.status(400).json({ error: 'paid orders must be refunded, not voided' });
   const out = await store.updateOrder(order.id, { status: 'voided', voidReason: req.body.reason || 'staff void' });
-  if (order.table) await store.setTableStatus(order.table, 'open', null);
+  if (order.table) await store.setTableStatus(order.table, 'open', null, tid(req));
   res.json(out);
 }));
 
 // ---- reports ----
 app.get('/api/reports/summary', requireAuth, requireRole('manager'), h(async (req, res) => {
-  const pays = await store.listPayments();
-  const tables = await store.listTables();
+  const pays = await store.listPayments(tid(req));
+  const tables = await store.listTables(tid(req));
   const gross = round(pays.reduce((a, p) => a + p.total, 0));
   const refunds = round(pays.reduce((a, p) => a + (p.refundedAmount || 0), 0));
   const net = round(gross - refunds);
@@ -248,44 +278,45 @@ function requireIntegrationKey(req, res, next) {
 }
 
 // Shared: turn a normalized incoming order into a live Tavo order (+ payment for reporting).
-async function createDeliveryOrder(norm) {
+async function createDeliveryOrder(norm, tenantId = DEFAULT_TENANT) {
   if (norm.externalId) {
-    const existing = await store.findOrderByExternalId(norm.externalId);
+    const existing = await store.findOrderByExternalId(norm.externalId, tenantId);
     if (existing) return { order: existing, duplicate: true };   // idempotent
   }
   const totals = priceLines(norm.lines);
-  const count = await store.countOrders();
+  const count = await store.countOrders(tenantId);
   const order = {
     id: nanoid(10), number: 1000 + count + 1, table: null, lines: norm.lines, ...totals,
     status: 'cooking', channel: 'delivery', platform: norm.platform, customer: norm.customer,
-    externalId: norm.externalId, createdAt: Date.now(), firedAt: Date.now(),
+    externalId: norm.externalId, tenantId, createdAt: Date.now(), firedAt: Date.now(),
   };
   await store.createOrder(order);
   // The platform already collected payment from the customer — record it so it shows in sales/reports by platform.
   await store.createPayment({
     id: nanoid(10), orderId: order.id, table: null, lines: norm.lines, ...totals,
     tip: 0, total: totals.total, method: norm.platform, status: 'succeeded', stripeId: null,
-    confirmed: true, refundedAmount: 0, refundedAt: null, createdAt: Date.now(),
+    confirmed: true, refundedAmount: 0, refundedAt: null, tenantId, createdAt: Date.now(),
   });
   return { order, duplicate: false };
 }
 
 // Webhook: external platforms / aggregators POST incoming orders here.
+// The integration key can carry a tenant via the `x-tenant` header (defaults to 'default').
 app.post('/api/integrations/orders', requireIntegrationKey, h(async (req, res) => {
   let norm;
   try { norm = normalizeIncoming(req.body); } catch (e) { return res.status(400).json({ error: e.message }); }
-  const { order, duplicate } = await createDeliveryOrder(norm);
+  const { order, duplicate } = await createDeliveryOrder(norm, req.headers['x-tenant'] || DEFAULT_TENANT);
   res.status(duplicate ? 200 : 201).json({ received: true, duplicate, order });
 }));
 
 // Menu export for pushing to platforms/aggregators.
 app.get('/api/integrations/menu', requireIntegrationKey, h(async (req, res) =>
-  res.json(exportMenu(await store.listMenu()))));
+  res.json(exportMenu(await store.listMenu(req.headers['x-tenant'] || DEFAULT_TENANT)))));
 
 // Sandbox: a logged-in manager can simulate an incoming delivery order (no key needed).
 app.post('/api/integrations/simulate', requireAuth, requireRole('manager'), h(async (req, res) => {
   const platform = String(req.body.platform || 'doordash');
-  const menu = (await store.listMenu()).filter(m => m.active !== false);
+  const menu = (await store.listMenu(tid(req))).filter(m => m.active !== false);
   if (!menu.length) return res.status(400).json({ error: 'no menu items to build a test order' });
   const pick = () => menu[Math.floor(Math.random() * menu.length)];
   const lines = [pick(), pick()].map(it => ({ name: it.name, price: it.price, qty: 1 + Math.floor(Math.random() * 2), mods: [] }));
@@ -294,7 +325,7 @@ app.post('/api/integrations/simulate', requireAuth, requireRole('manager'), h(as
     platform, externalId: platform + '_' + Date.now(),
     customer: names[Math.floor(Math.random() * names.length)] + ' (delivery)', lines,
   };
-  const { order } = await createDeliveryOrder(norm);
+  const { order } = await createDeliveryOrder(norm, tid(req));
   res.status(201).json({ simulated: true, order });
 }));
 
@@ -306,8 +337,8 @@ app.get('/api/reports/zreport', requireAuth, requireRole('manager'), h(async (re
   const end = start + 24 * 60 * 60 * 1000;
   const inDay = t => t != null && t >= start && t < end;
 
-  const pays = (await store.listPayments()).filter(p => inDay(p.createdAt));
-  const orders = (await store.listOrders()).filter(o => inDay(o.createdAt));
+  const pays = (await store.listPayments(tid(req))).filter(p => inDay(p.createdAt));
+  const orders = (await store.listOrders(undefined, tid(req))).filter(o => inDay(o.createdAt));
 
   const sum = (arr, f) => round(arr.reduce((a, x) => a + (f(x) || 0), 0));
   const gross = sum(pays, p => p.total);
@@ -339,7 +370,7 @@ app.get('/api/reports/zreport', requireAuth, requireRole('manager'), h(async (re
 }));
 
 // ---- staff ----
-app.get('/api/staff', requireAuth, requireRole('manager'), h(async (req, res) => res.json(await store.listStaff())));
+app.get('/api/staff', requireAuth, requireRole('manager'), h(async (req, res) => res.json(await store.listStaff(tid(req)))));
 
 async function start() {
   store = await getStore();             // getStore() runs schema migration in init()

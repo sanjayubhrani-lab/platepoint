@@ -1,4 +1,12 @@
--- PlatePoint POS — PostgreSQL schema
+-- Tavo POS — PostgreSQL schema (multi-tenant)
+CREATE TABLE IF NOT EXISTS tenants (
+  id         TEXT PRIMARY KEY,
+  name       TEXT,
+  slug       TEXT UNIQUE,
+  plan       TEXT DEFAULT 'free',
+  created_at BIGINT
+);
+
 CREATE TABLE IF NOT EXISTS menu (
   id         TEXT PRIMARY KEY,
   category   TEXT,
@@ -8,13 +16,15 @@ CREATE TABLE IF NOT EXISTS menu (
   image      TEXT,
   sort_order INTEGER DEFAULT 0,
   modifier_groups JSONB DEFAULT '[]',
+  tenant_id  TEXT DEFAULT 'default',
   active     BOOLEAN DEFAULT TRUE
 );
 
 CREATE TABLE IF NOT EXISTS tables (
-  number    INTEGER PRIMARY KEY,
+  number    INTEGER,
   status    TEXT DEFAULT 'open',
-  order_id  TEXT
+  order_id  TEXT,
+  tenant_id TEXT DEFAULT 'default'
 );
 
 CREATE TABLE IF NOT EXISTS orders (
@@ -31,6 +41,7 @@ CREATE TABLE IF NOT EXISTS orders (
   platform   TEXT,
   customer   TEXT,
   external_id TEXT,
+  tenant_id  TEXT DEFAULT 'default',
   created_at BIGINT,
   fired_at   BIGINT
 );
@@ -50,6 +61,7 @@ CREATE TABLE IF NOT EXISTS payments (
   confirmed  BOOLEAN DEFAULT FALSE,
   refunded_amount NUMERIC(10,2) DEFAULT 0,
   refunded_at BIGINT,
+  tenant_id  TEXT DEFAULT 'default',
   created_at BIGINT
 );
 
@@ -57,14 +69,16 @@ CREATE TABLE IF NOT EXISTS users (
   id        TEXT PRIMARY KEY,
   name      TEXT,
   role      TEXT,
-  pin_hash  TEXT
+  pin_hash  TEXT,
+  tenant_id TEXT DEFAULT 'default'
 );
 
 CREATE TABLE IF NOT EXISTS staff (
   id            TEXT PRIMARY KEY,
   name          TEXT,
   role          TEXT,
-  clocked_in_at BIGINT
+  clocked_in_at BIGINT,
+  tenant_id     TEXT DEFAULT 'default'
 );
 
 CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
