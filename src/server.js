@@ -471,6 +471,56 @@ app.post('/api/payments/complete', requireAuth, requireRole('manager', 'server')
   res.status(201).json({ ...payment, pointsBalance: member ? (await store.getCustomer(member.id)).points : null });
 }));
 
+// Split a check across multiple tenders (e.g., $20 cash + the rest card, or an
+// even split). The first tender carries the full lines + tax/discount breakdown
+// so item counts aren't double-counted; the rest carry only the tendered amount.
+app.post('/api/payments/split', requireAuth, requireRole('manager', 'server'), h(async (req, res) => {
+  const { lines = [], tip = 0, discount = 0, discountReason = null, serviceCharge = 0, comp = false,
+    orderId = null, table = null, tenders = [], customerId = null, pointsRedeemed = 0 } = req.body;
+  if (!Array.isArray(tenders) || tenders.length < 1) return res.status(400).json({ error: 'at least one tender required' });
+  const sub0 = priceLines(lines).subtotal;
+  if ((comp || (Number(discount) || 0) >= sub0 - 1e-9) && (Number(discount) || 0) > 0 && req.user.role !== 'manager')
+    return res.status(403).json({ error: 'comps require a manager' });
+  const totals = settle(lines, { discount, serviceCharge, tip });
+  const paid = round(tenders.reduce((a, t) => a + (Number(t.amount) || 0), 0));
+  if (Math.abs(paid - totals.total) > 0.01) return res.status(400).json({ error: `tenders total ${paid.toFixed(2)} must equal the check total ${totals.total.toFixed(2)}` });
+
+  // loyalty (award once on the whole check)
+  let pointsEarned = 0, member = null;
+  if (customerId) {
+    member = await store.getCustomer(customerId);
+    if (member && (member.tenantId || DEFAULT_TENANT) === tid(req)) {
+      pointsEarned = Math.floor(totals.subtotal * LOYALTY_EARN);
+      const redeem = Math.max(0, Math.min(Math.round(Number(pointsRedeemed) || 0), member.points || 0));
+      await store.updateCustomer(member.id, { points: Math.max(0, (member.points || 0) - redeem + pointsEarned), visits: (member.visits || 0) + 1, totalSpent: round((member.totalSpent || 0) + totals.total) });
+    } else { member = null; }
+  }
+
+  const created = [];
+  for (let i = 0; i < tenders.length; i++) {
+    const t = tenders[i];
+    const first = i === 0;
+    const payment = {
+      id: nanoid(10), orderId, table,
+      lines: first ? lines : [],
+      subtotal: first ? totals.subtotal : 0, discount: first ? totals.discount : 0, serviceCharge: first ? totals.serviceCharge : 0,
+      tax: first ? totals.tax : 0, tip: first ? totals.tip : 0,
+      total: round(Number(t.amount) || 0),
+      method: t.method || 'card', status: 'succeeded', stripeId: null, confirmed: false,
+      refundedAmount: 0, refundedAt: null,
+      discountReason: first && totals.discount > 0 ? (discountReason || (comp ? 'Comp' : 'Discount')) : null,
+      customerId: first && member ? member.id : null, pointsEarned: first ? pointsEarned : 0, pointsRedeemed: first && member ? Math.round(Number(pointsRedeemed) || 0) : 0,
+      split: true, splitCount: tenders.length, tenantId: tid(req), createdAt: Date.now(),
+    };
+    await store.createPayment(payment);
+    created.push(payment);
+  }
+  await depleteProductStock(lines, tid(req));
+  if (orderId) await store.updateOrder(orderId, { status: 'paid' });
+  if (table) await store.setTableStatus(table, 'open', null, tid(req));
+  res.status(201).json({ ok: true, total: totals.total, tenders: created.length, payments: created.map(p => ({ id: p.id, method: p.method, total: p.total })) });
+}));
+
 app.get('/api/payments', requireAuth, h(async (req, res) => res.json(await store.listPayments(tid(req)))));
 
 // Refund a payment (full or partial). Manager only.
@@ -774,6 +824,52 @@ app.post('/api/ask', requireAuth, requireRole('manager'), h(async (req, res) => 
   });
   res.json({ question, ...result });
 }));
+
+// ---- cash drawer management ----
+// Live expected cash = starting float + cash sales during the session + paid-in − paid-out.
+async function drawerState(d, tenantId) {
+  if (!d) return null;
+  const pays = await store.listPayments(tenantId);
+  const end = d.closedAt || (Date.now() + 1);
+  const cashSales = round(pays.filter(p => p.method === 'cash' && p.createdAt >= d.openedAt && p.createdAt < end).reduce((a, p) => a + (p.total || 0), 0));
+  const expected = round((d.startingFloat || 0) + cashSales + (d.paidIn || 0) - (d.paidOut || 0));
+  return { ...d, cashSales, expected };
+}
+
+app.get('/api/drawer', requireAuth, requireRole('manager', 'server'), h(async (req, res) => {
+  const d = await store.getOpenDrawer(tid(req));
+  res.json(d ? { open: true, drawer: await drawerState(d, tid(req)) } : { open: false });
+}));
+
+app.post('/api/drawer/open', requireAuth, requireRole('manager'), h(async (req, res) => {
+  if (await store.getOpenDrawer(tid(req))) return res.status(409).json({ error: 'a drawer is already open — close it first' });
+  const d = { id: nanoid(10), openedBy: req.user.name || 'Manager', openedAt: Date.now(), startingFloat: round(Number(req.body.startingFloat) || 0), paidIn: 0, paidOut: 0, status: 'open', tenantId: tid(req) };
+  await store.createDrawer(d);
+  res.status(201).json(await drawerState(d, tid(req)));
+}));
+
+// Paid in / paid out (e.g., petty cash, tips paid out, change drops).
+app.post('/api/drawer/movement', requireAuth, requireRole('manager'), h(async (req, res) => {
+  const d = await store.getOpenDrawer(tid(req));
+  if (!d) return res.status(400).json({ error: 'no open drawer' });
+  const amt = round(Math.abs(Number(req.body.amount) || 0));
+  if (!(amt > 0)) return res.status(400).json({ error: 'amount must be positive' });
+  const patch = req.body.type === 'out' ? { paidOut: round((d.paidOut || 0) + amt) } : { paidIn: round((d.paidIn || 0) + amt) };
+  const out = await store.updateDrawer(d.id, patch);
+  res.json(await drawerState(out, tid(req)));
+}));
+
+app.post('/api/drawer/close', requireAuth, requireRole('manager'), h(async (req, res) => {
+  const d = await store.getOpenDrawer(tid(req));
+  if (!d) return res.status(400).json({ error: 'no open drawer' });
+  const state = await drawerState(d, tid(req));
+  const counted = round(Number(req.body.counted) || 0);
+  const variance = round(counted - state.expected);
+  const out = await store.updateDrawer(d.id, { status: 'closed', closedBy: req.user.name || 'Manager', closedAt: Date.now(), expected: state.expected, counted, variance });
+  res.json({ ...out, cashSales: state.cashSales, variance });
+}));
+
+app.get('/api/drawers', requireAuth, requireRole('manager'), h(async (req, res) => res.json(await store.listDrawers(tid(req)))));
 
 // ---- staff ----
 app.get('/api/staff', requireAuth, requireRole('manager'), h(async (req, res) => res.json(await store.listStaff(tid(req)))));

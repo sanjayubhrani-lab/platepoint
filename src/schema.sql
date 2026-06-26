@@ -119,5 +119,21 @@ CREATE TABLE IF NOT EXISTS giftcards (
   created_at      BIGINT
 );
 
+CREATE TABLE IF NOT EXISTS drawers (
+  id             TEXT PRIMARY KEY,
+  opened_by      TEXT,
+  opened_at      BIGINT,
+  starting_float NUMERIC(10,2) DEFAULT 0,
+  paid_in        NUMERIC(10,2) DEFAULT 0,
+  paid_out       NUMERIC(10,2) DEFAULT 0,
+  closed_by      TEXT,
+  closed_at      BIGINT,
+  expected       NUMERIC(10,2),
+  counted        NUMERIC(10,2),
+  variance       NUMERIC(10,2),
+  status         TEXT DEFAULT 'open',
+  tenant_id      TEXT DEFAULT 'default'
+);
+
 CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
 CREATE INDEX IF NOT EXISTS idx_payments_stripe ON payments(stripe_id);
