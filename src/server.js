@@ -424,7 +424,7 @@ app.post('/api/orders', requireAuth, h(async (req, res) => {
   if (!lines.length) return res.status(400).json({ error: 'order has no items' });
   const totals = priceLines(lines);
   const count = await store.countOrders(tid(req));
-  const order = { id: nanoid(10), number: 1000 + count + 1, table, lines, ...totals, status: 'open', tenantId: tid(req), createdAt: Date.now() };
+  const order = { id: nanoid(10), number: 1000 + count + 1, table, lines, ...totals, status: 'open', firedCourses: [], tenantId: tid(req), createdAt: Date.now() };
   await store.createOrder(order);
   if (table) await store.setTableStatus(table, 'seated', order.id, tid(req));
   res.status(201).json(order);
@@ -437,6 +437,26 @@ app.post('/api/orders/:id/fire', requireAuth, h(async (req, res) => {
   if (!out) return res.status(404).json({ error: 'not found' });
   // Deplete stock only on the first fire (open → cooking), so re-fires don't double-count.
   if (before && before.status !== 'cooking') await depleteForOrder(out, tid(req));
+  res.json(out);
+}));
+
+// Fire a single course to the kitchen (coursing). Sends just that course's items,
+// depletes their stock once, and records the course as fired so it isn't re-sent.
+app.post('/api/orders/:id/fire-course', requireAuth, h(async (req, res) => {
+  const order = await store.getOrder(req.params.id);
+  if (!order || (order.tenantId || DEFAULT_TENANT) !== tid(req)) return res.status(404).json({ error: 'not found' });
+  const course = String(req.body.course ?? '');
+  if (!course) return res.status(400).json({ error: 'course required' });
+  const courseLines = (order.lines || []).filter(l => String(l.course ?? '') === course);
+  if (courseLines.length === 0) return res.status(400).json({ error: 'no items in that course' });
+  const fired = Array.isArray(order.firedCourses) ? order.firedCourses.slice() : [];
+  if (fired.includes(course)) return res.status(400).json({ error: 'course already fired' });
+  fired.push(course);
+  // deplete only this course's lines
+  await depleteForOrder({ ...order, lines: courseLines }, tid(req));
+  const patch = { firedCourses: fired };
+  if (order.status === 'open') { patch.status = 'cooking'; patch.firedAt = Date.now(); }
+  const out = await store.updateOrder(req.params.id, patch);
   res.json(out);
 }));
 

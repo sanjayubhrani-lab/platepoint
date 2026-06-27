@@ -54,6 +54,7 @@ CREATE TABLE IF NOT EXISTS orders (
   platform   TEXT,
   customer   TEXT,
   external_id TEXT,
+  fired_courses JSONB DEFAULT '[]',
   tenant_id  TEXT DEFAULT 'default',
   created_at BIGINT,
   fired_at   BIGINT
