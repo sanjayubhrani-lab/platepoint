@@ -360,6 +360,7 @@ function checkPanel(){
       <div class="totrow big"><span>Total</span><span>${money(t.total)}</span></div></div>
     <div class="actions"><button class="btn ghost" ${!check.length?'disabled':''} onclick="sendToKitchen()">Send 👨‍🍳</button>
       <button class="btn primary" ${!check.length?'disabled':''} onclick="startPayment()">Pay ${money(t.total)}</button></div>
+    ${check.length?`<div style="padding:0 12px 8px"><button class="btn ghost" style="width:100%" onclick="startCustomerCheckout()">📱 Customer screen checkout</button></div>`:""}
     ${seats.length>=2?`<div style="padding:0 12px 8px"><button class="btn ghost" style="width:100%" onclick="splitBySeat()">👥 Split by seat (${seats.length})</button></div>`:""}
     ${check.length?`<div style="padding:0 12px 12px"><button class="btn ghost" style="width:100%" onclick="clearCheck()">Clear</button></div>`:""}</div>`;
 }
@@ -1006,6 +1007,72 @@ function pushDisplay(opts){
   const sig=JSON.stringify(payload);
   if(sig===_dispSig) return; _dispSig=sig;
   api('/display',{method:'POST',body:JSON.stringify(payload)}).catch(()=>{});
+}
+
+/* ---- DUAL-SCREEN (Clover-Duo-style) CUSTOMER CHECKOUT ---- */
+let _cc=null;            // active session {sessionId, lines, total, ...}
+let _ccTimer=null, _ccCharging=false, _ccReceiptDone=false, _ccPayId=null;
+async function startCustomerCheckout(){
+  if(!check.length) return;
+  if(!ONLINE){ toast('Customer checkout needs a connection'); return; }
+  const t=totals(check);
+  const lines=check.map(l=>({name:l.name,qty:l.qty,price:l.price}));
+  try{
+    _cc=await api('/display/checkout',{method:'POST',body:JSON.stringify({lines,subtotal:t.sub,tax:t.tax,total:t.total,tipPresets:[0.18,0.20,0.25]})});
+    _ccCharging=false; _ccReceiptDone=false; _ccPayId=null;
+    ccModal('📲 Sent to the customer screen','The guest is choosing a tip and paying…');
+    clearInterval(_ccTimer); _ccTimer=setInterval(pollCustomerCheckout,1100); pollCustomerCheckout();
+  }catch(e){ toast('⚠️ '+e.message); }
+}
+function ccModal(title,body,done){
+  openModal(`<div class="mhd"><h3>${title}</h3><button class="x" onclick="cancelCustomerCheckout()">✕</button></div>
+    <div class="mbd" style="text-align:center;padding:24px">
+      ${done?'<div style="font-size:54px;color:var(--green);margin-bottom:8px">✓</div>':'<div class="spin" style="width:46px;height:46px;border:5px solid var(--line);border-top-color:var(--brand);border-radius:50%;animation:rot 1s linear infinite;margin:0 auto 16px"></div>'}
+      <div style="font-size:15px;color:var(--mut);line-height:1.6">${body}</div>
+      ${done?'':'<button class="btn ghost" style="margin-top:18px" onclick="cancelCustomerCheckout()">Cancel</button>'}</div>`);
+  if(!document.getElementById('ccrot')){const st=document.createElement('style');st.id='ccrot';st.textContent='@keyframes rot{to{transform:rotate(360deg)}}';document.head.appendChild(st);}
+}
+async function pollCustomerCheckout(){
+  if(!_cc) return;
+  let s; try{ s=await api('/display?tenant='+encodeURIComponent(guestSlug())); }catch(e){ return; }
+  const co=s.checkout;
+  if(!co || co.sessionId!==_cc.sessionId){ return; }   // session ended elsewhere
+  if(co.phase==='tip'){ ccModal('📲 Waiting for the guest','Choosing a tip on the customer screen…'); return; }
+  if(co.phase==='await_card' && !_ccCharging){
+    _ccCharging=true;
+    ccModal('💳 Taking payment',`Charging ${money(_cc.baseTotal+(co.tip||0))}${co.tip?` (incl. ${money(co.tip)} tip)`:''}…`);
+    try{
+      const lines=_cc.lines.map(l=>({name:l.name,price:l.price,qty:l.qty}));
+      const intent=await api('/payments/intent',{method:'POST',body:JSON.stringify({lines,tip:co.tip||0})});
+      const r=await api('/payments/complete',{method:'POST',body:JSON.stringify({intentId:intent.id,method:'card',lines,tip:co.tip||0,table:tableNo})});
+      _ccPayId=r.id;
+      await api('/display/checkout/advance',{method:'POST',body:JSON.stringify({sessionId:_cc.sessionId,phase:'approved'})});
+      ccModal('✅ Approved','Guest is choosing how to get their receipt…');
+    }catch(e){
+      await api('/display/checkout/advance',{method:'POST',body:JSON.stringify({sessionId:_cc.sessionId,phase:'declined'})}).catch(()=>{});
+      finishCustomerCheckout(); toast('⚠️ Payment failed: '+e.message);
+    }
+    return;
+  }
+  if(co.phase==='approved' && co.receipt && !_ccReceiptDone){
+    _ccReceiptDone=true;
+    try{
+      if((co.receipt==='email'||co.receipt==='sms') && co.contact && _ccPayId)
+        await api('/receipts/send',{method:'POST',body:JSON.stringify({paymentId:_ccPayId,channel:co.receipt,to:co.contact})});
+    }catch(e){}
+    await api('/display/checkout/advance',{method:'POST',body:JSON.stringify({sessionId:_cc.sessionId,phase:'done'})}).catch(()=>{});
+    ccModal('✅ Done',`Payment complete${co.receipt==='email'?' · receipt emailed':co.receipt==='sms'?' · receipt texted':''}.`,true);
+    setTimeout(()=>{ api('/display/checkout/advance',{method:'POST',body:JSON.stringify({sessionId:_cc.sessionId,phase:'idle'})}).catch(()=>{}); finishCustomerCheckout(); }, 2200);
+  }
+}
+function finishCustomerCheckout(){
+  clearInterval(_ccTimer); _ccTimer=null; const done=!!_ccPayId; _cc=null;
+  check=[];tableNo=null;checkCustomer=null; closeModal(); render();
+  if(done) toast('💰 Paid on customer screen');
+}
+async function cancelCustomerCheckout(){
+  if(_cc){ try{ await api('/display/checkout/advance',{method:'POST',body:JSON.stringify({sessionId:_cc.sessionId,phase:'idle'})}); }catch(e){} }
+  clearInterval(_ccTimer); _ccTimer=null; _cc=null; closeModal(); render();
 }
 async function qrView(){
   const tables=await api('/tables').catch(()=>cacheGet('/tables')||[]);
