@@ -225,5 +225,21 @@ CREATE TABLE IF NOT EXISTS stocktakes (
   closed_at   BIGINT
 );
 
+CREATE TABLE IF NOT EXISTS reservations (
+  id           TEXT PRIMARY KEY,
+  kind         TEXT DEFAULT 'reservation',
+  name         TEXT,
+  phone        TEXT,
+  party_size   INTEGER DEFAULT 1,
+  time         BIGINT,
+  quoted_wait  INTEGER,
+  status       TEXT DEFAULT 'booked',
+  table_number INTEGER,
+  notes        TEXT,
+  tenant_id    TEXT DEFAULT 'default',
+  created_at   BIGINT,
+  seated_at    BIGINT
+);
+
 CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
 CREATE INDEX IF NOT EXISTS idx_payments_stripe ON payments(stripe_id);

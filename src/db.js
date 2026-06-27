@@ -24,7 +24,8 @@ const DEFAULTS = {
   campaigns: [],   // {id, name, channel, segment, subject, body, recipients, sent, failed, tenantId, createdAt}  — marketing campaigns
   vendors: [],     // {id, name, contact, email, phone, notes, tenantId, createdAt}  — suppliers
   purchaseOrders: [], // {id, vendorId, vendorName, status, lines, total, notes, receivedAt, tenantId, createdAt}  — POs
-  stocktakes: []   // {id, name, status, counts, tenantId, createdAt, closedAt}  — cycle counts
+  stocktakes: [],  // {id, name, status, counts, tenantId, createdAt, closedAt}  — cycle counts
+  reservations: [] // {id, kind, name, phone, partySize, time, quotedWait, status, tableNumber, notes, tenantId, createdAt, seatedAt}
 };
 
 function ensureFile() {

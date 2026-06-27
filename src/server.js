@@ -977,6 +977,64 @@ app.post('/api/stocktakes/:id/apply', requireAuth, requireRole('manager'), h(asy
   res.json({ ...out, adjustedProducts: adjusted });
 }));
 
+// ============================================================================
+//  Reservations + waitlist
+// ============================================================================
+const RESV_STATUS = ['booked', 'waiting', 'seated', 'cancelled', 'noshow', 'done'];
+
+app.get('/api/reservations', requireAuth, requireRole('manager', 'server'), h(async (req, res) => {
+  let list = await store.listReservations(tid(req));
+  if (req.query.kind) list = list.filter(r => r.kind === req.query.kind);
+  res.json(list);
+}));
+
+app.post('/api/reservations', requireAuth, requireRole('manager', 'server'), h(async (req, res) => {
+  const { kind = 'reservation', name, phone, partySize, time, quotedWait, notes } = req.body;
+  if (!name) return res.status(400).json({ error: 'guest name required' });
+  if (kind === 'reservation' && !time) return res.status(400).json({ error: 'reservation time required' });
+  const r = {
+    id: nanoid(8), kind: kind === 'waitlist' ? 'waitlist' : 'reservation',
+    name: String(name).slice(0, 60), phone: phone ? String(phone) : '',
+    partySize: Math.max(1, Math.round(Number(partySize) || 1)),
+    time: kind === 'reservation' ? Number(time) : null,
+    quotedWait: kind === 'waitlist' ? Math.max(0, Math.round(Number(quotedWait) || 0)) : null,
+    status: kind === 'waitlist' ? 'waiting' : 'booked', tableNumber: null,
+    notes: notes ? String(notes).slice(0, 200) : '', tenantId: tid(req), createdAt: Date.now(), seatedAt: null,
+  };
+  await store.createReservation(r);
+  res.status(201).json(r);
+}));
+
+app.put('/api/reservations/:id', requireAuth, requireRole('manager', 'server'), h(async (req, res) => {
+  const cur = await store.getReservation(req.params.id);
+  if (!cur || (cur.tenantId || DEFAULT_TENANT) !== tid(req)) return res.status(404).json({ error: 'not found' });
+  const patch = {};
+  for (const k of ['name', 'phone', 'notes']) if (req.body[k] != null) patch[k] = String(req.body[k]).slice(0, 200);
+  if (req.body.partySize != null) patch.partySize = Math.max(1, Math.round(Number(req.body.partySize) || 1));
+  if (req.body.time != null) patch.time = Number(req.body.time);
+  if (req.body.quotedWait != null) patch.quotedWait = Math.max(0, Math.round(Number(req.body.quotedWait) || 0));
+  res.json(await store.updateReservation(req.params.id, patch));
+}));
+
+// Seat a party: assign a table, mark seated, flag the table occupied on the floor.
+app.post('/api/reservations/:id/seat', requireAuth, requireRole('manager', 'server'), h(async (req, res) => {
+  const cur = await store.getReservation(req.params.id);
+  if (!cur || (cur.tenantId || DEFAULT_TENANT) !== tid(req)) return res.status(404).json({ error: 'not found' });
+  if (['seated', 'cancelled', 'noshow', 'done'].includes(cur.status)) return res.status(400).json({ error: `already ${cur.status}` });
+  const tableNumber = req.body.tableNumber != null ? Math.round(Number(req.body.tableNumber)) : null;
+  if (tableNumber != null) { try { await store.setTableStatus(tableNumber, 'seated', null, tid(req)); } catch { /* table may not exist */ } }
+  res.json(await store.updateReservation(req.params.id, { status: 'seated', tableNumber, seatedAt: Date.now() }));
+}));
+
+// Update status (cancel / no-show / done).
+app.post('/api/reservations/:id/status', requireAuth, requireRole('manager', 'server'), h(async (req, res) => {
+  const cur = await store.getReservation(req.params.id);
+  if (!cur || (cur.tenantId || DEFAULT_TENANT) !== tid(req)) return res.status(404).json({ error: 'not found' });
+  const status = String(req.body.status || '');
+  if (!RESV_STATUS.includes(status)) return res.status(400).json({ error: 'invalid status' });
+  res.json(await store.updateReservation(req.params.id, { status }));
+}));
+
 // ---- loyalty config ----
 app.get('/api/loyalty/config', requireAuth, (req, res) =>
   res.json({ earnRate: LOYALTY_EARN, redeemRate: LOYALTY_REDEEM }));
