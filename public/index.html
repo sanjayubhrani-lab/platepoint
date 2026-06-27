@@ -331,15 +331,18 @@ async function scanAdd(){
 }
 function checkPanel(){
   const t=totals(check);
+  const seatCourseChip=l=>{const bits=[];if(l.seat)bits.push('👤'+l.seat);if(l.course)bits.push('🍽'+l.course);return bits.length?bits.join(' '):'+ seat/course';};
   const lines=check.length?check.map((l,i)=>`<div class="line"><div class="qty">${l.qty}</div>
     <div class="info"><div class="ln-nm">${l.name}</div>${(l.mods&&l.mods.length)?`<div class="ln-mod">${l.mods.join(", ")}</div>`:""}
-    <div style="margin-top:5px;display:flex;gap:6px">
+    <div style="margin-top:5px;display:flex;gap:6px;flex-wrap:wrap">
       <button class="chip" style="padding:2px 9px" onclick="chgQty(${i},-1)">−</button>
       <button class="chip" style="padding:2px 9px" onclick="chgQty(${i},1)">+</button>
-      <button class="chip" style="padding:2px 9px" onclick="editMods(${i})">⚙️</button></div></div>
+      <button class="chip" style="padding:2px 9px" onclick="editMods(${i})">⚙️</button>
+      ${isRetail()?'':`<button class="chip" style="padding:2px 9px;${(l.seat||l.course)?'color:#c084fc':'color:var(--mut)'}" onclick="lineMeta(${i})">${seatCourseChip(l)}</button>`}</div></div>
     <div style="text-align:right"><div class="ln-pr">${money((l.price+(l.mods||[]).reduce((s,m)=>{const x=String(m).match(/\+\$([0-9.]+)/);return s+(x?+x[1]:0)},0))*l.qty)}</div>
     <button class="rm" onclick="rmLine(${i})">✕</button></div></div>`).join("")
     :`<div class="empty">🛒 No items yet.<br>Tap menu items to start.</div>`;
+  const seats=[...new Set(check.map(l=>l.seat).filter(Boolean))];
   const custRow = checkCustomer
     ? `<div style="display:flex;align-items:center;gap:8px;padding:8px 12px;background:rgba(168,85,247,.12);border-bottom:1px solid var(--line)">
         <span style="font-size:13px">💳 <b>${checkCustomer.name||'Member'}</b> · ${checkCustomer.points} pts</span>
@@ -354,7 +357,36 @@ function checkPanel(){
       <div class="totrow big"><span>Total</span><span>${money(t.total)}</span></div></div>
     <div class="actions"><button class="btn ghost" ${!check.length?'disabled':''} onclick="sendToKitchen()">Send 👨‍🍳</button>
       <button class="btn primary" ${!check.length?'disabled':''} onclick="startPayment()">Pay ${money(t.total)}</button></div>
+    ${seats.length>=2?`<div style="padding:0 12px 8px"><button class="btn ghost" style="width:100%" onclick="splitBySeat()">👥 Split by seat (${seats.length})</button></div>`:""}
     ${check.length?`<div style="padding:0 12px 12px"><button class="btn ghost" style="width:100%" onclick="clearCheck()">Clear</button></div>`:""}</div>`;
+}
+// Assign a seat number and course to a cart line.
+function lineMeta(i){
+  const l=check[i];
+  openModal(`<div class="mhd"><h3>Seat &amp; course · ${esc(l.name)}</h3><button class="x" onclick="closeModal()">✕</button></div><div class="mbd">
+    <label style="font-size:12px;color:var(--mut)">Seat number</label>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin:6px 0 14px">
+      ${[1,2,3,4,5,6].map(n=>`<button class="chip ${l.seat===n?'sel':''}" onclick="setLineMeta(${i},'seat',${n})">👤 ${n}</button>`).join('')}
+      <button class="chip ${!l.seat?'sel':''}" onclick="setLineMeta(${i},'seat',null)">None</button></div>
+    <label style="font-size:12px;color:var(--mut)">Course</label>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">
+      ${[['1','1 · Apps'],['2','2 · Mains'],['3','3 · Dessert']].map(([v,lab])=>`<button class="chip ${l.course===v?'sel':''}" onclick="setLineMeta(${i},'course','${v}')">${lab}</button>`).join('')}
+      <button class="chip ${!l.course?'sel':''}" onclick="setLineMeta(${i},'course',null)">None</button></div></div>`);
+}
+function setLineMeta(i,key,val){ check[i][key]=val; lineMeta(i); render(); }
+// Per-seat itemization for splitting the check.
+function splitBySeat(){
+  const groups={};
+  check.forEach(l=>{const s=l.seat||'Shared';(groups[s] ||= []).push(l);});
+  const sec=Object.entries(groups).sort((a,b)=>String(a[0]).localeCompare(String(b[0]))).map(([seat,ls])=>{
+    const t=totals(ls);
+    return `<div class="card" style="margin-bottom:10px"><div class="sec-title" style="margin:0 0 6px">${seat==='Shared'?'🍽 Shared':'👤 Seat '+seat}</div>
+      ${ls.map(l=>`<div style="display:flex;justify-content:space-between;font-size:13px;padding:2px 0"><span>${l.qty}× ${esc(l.name)}</span><span>${money(l.price*l.qty)}</span></div>`).join('')}
+      <div style="display:flex;justify-content:space-between;font-weight:700;border-top:1px solid var(--line);margin-top:6px;padding-top:6px"><span>Seat total (incl. tax)</span><span>${money(t.total)}</span></div></div>`;
+  }).join('');
+  openModal(`<div class="mhd"><h3>👥 Split by seat</h3><button class="x" onclick="closeModal()">✕</button></div><div class="mbd">
+    <p style="font-size:12px;color:var(--mut);margin:0 0 12px">Collect each seat separately, then take payment. Assign seats to items using the seat chip on each line.</p>
+    ${sec}</div>`);
 }
 function setCat(c){activeCat=c;render()}
 function addItem(id){const it=MENU.find(m=>m.id===id);
@@ -489,12 +521,15 @@ async function saveServiceCharge(){
 function toggleSetting(key,on){ localStorage.setItem(key, on?'1':'0'); toast(on?'On':'Off'); }
 const autoTicket = () => localStorage.getItem('pp_autoprint_ticket')==='1';
 async function sendToKitchen(){
-  const payload={lines:check.map(l=>({name:l.name,price:l.price,qty:l.qty,mods:l.mods})),table:tableNo};
+  const payload={lines:check.map(l=>({name:l.name,price:l.price,qty:l.qty,mods:l.mods,seat:l.seat||null,course:l.course||null})),table:tableNo};
+  const courses=[...new Set(check.map(l=>l.course).filter(Boolean))].sort();
   if(ONLINE){
     try{const order=await api('/orders',{method:'POST',body:JSON.stringify(payload)});
-      await api('/orders/'+order.id+'/fire',{method:'POST'});
+      if(courses.length){ await api('/orders/'+order.id+'/fire-course',{method:'POST',body:JSON.stringify({course:courses[0]})}); }
+      else { await api('/orders/'+order.id+'/fire',{method:'POST'}); }
       if(autoTicket()) doPrint(ticketInner(order));
-      check=[];tableNo=null;checkCustomer=null;render();toast('✅ Order #'+order.number+' sent to kitchen');return;
+      check=[];tableNo=null;checkCustomer=null;render();
+      toast(courses.length?('✅ Order #'+order.number+' sent · course '+courses[0]+' fired'):('✅ Order #'+order.number+' sent to kitchen'));return;
     }catch(e){ if(!e.offline){ toast('⚠️ '+e.message); return; } /* offline → fall through to queue */ }
   }
   queueOrder(payload);
@@ -862,6 +897,29 @@ async function tableClick(n){
 }
 
 /* ---- KDS ---- */
+// Render a ticket body grouped by course, with seat tags and per-course fire buttons.
+function kdsBody(o){
+  const line=it=>`<div class="it">${it.qty}× ${it.name}${it.seat?` <span style="font-size:11px;color:#7fb3ff">👤${it.seat}</span>`:''}${(it.mods&&it.mods.length)?`<div class="mods">↳ ${it.mods.join(", ")}</div>`:""}</div>`;
+  const courses=[...new Set((o.lines||[]).map(l=>l.course).filter(Boolean))].sort();
+  if(!courses.length) return (o.lines||[]).map(line).join("");
+  const fired=o.firedCourses||[];
+  const noCourse=(o.lines||[]).filter(l=>!l.course);
+  const courseLabel={'1':'Course 1 · Apps','2':'Course 2 · Mains','3':'Course 3 · Dessert'};
+  let html=courses.map(c=>{
+    const ls=(o.lines||[]).filter(l=>l.course===c); const isFired=fired.includes(c);
+    return `<div style="border-top:1px dashed var(--line);padding-top:6px;margin-top:6px">
+      <div style="display:flex;justify-content:space-between;align-items:center;font-size:11px;color:var(--mut);margin-bottom:2px">
+        <b>${courseLabel[c]||('Course '+c)}</b>
+        ${isFired?'<span class="tag green" style="padding:1px 6px">fired</span>':(o._local?'':`<button class="chip" style="padding:2px 8px" onclick="fireCourse('${o.id}','${c}')">🔥 Fire</button>`)}</div>
+      ${ls.map(line).join("")}</div>`;
+  }).join("");
+  if(noCourse.length) html+=`<div style="margin-top:6px">${noCourse.map(line).join("")}</div>`;
+  return html;
+}
+async function fireCourse(orderId,course){
+  try{ await api('/orders/'+orderId+'/fire-course',{method:'POST',body:JSON.stringify({course})}); render(); toast('🔥 Course '+course+' fired'); }
+  catch(e){ toast('⚠️ '+e.message); }
+}
 async function kdsView(){
   const server=await api('/orders?status=cooking').catch(()=>cacheGet('/orders?status=cooking')||[]);
   const local=PENDING.map(p=>({...p,_local:true}));   // queued-offline tickets
@@ -874,7 +932,7 @@ async function kdsView(){
     return `<div class="ticket" ${o._local?'style="border-color:var(--amber)"':(pm?`style="border-color:${pm.color}"`:'')}><div class="thd"><span class="num">#${o.number}</span>
     ${o._local?'<span class="tag amber">⏳ Queued</span>':(pm?`<span class="tag" style="background:${pm.color}22;color:${pm.color}">${pm.emoji} ${pm.name}</span>`:`<span class="tag ${late?'red':'blue'}">${o.table?('Table '+o.table):'Takeout'}</span>`)}</div>
     ${pm&&o.customer?`<div style="padding:4px 14px 0;font-size:12px;color:var(--mut)">👤 ${o.customer}</div>`:''}
-    <div class="tbody">${o.lines.map(it=>`<div class="it">${it.qty}× ${it.name}${(it.mods&&it.mods.length)?`<div class="mods">↳ ${it.mods.join(", ")}</div>`:""}</div>`).join("")}</div>
+    <div class="tbody">${kdsBody(o)}</div>
     <div class="tfoot"><div style="font-size:12px;${late?'color:var(--red);font-weight:700':'color:var(--mut)'}">⏱ ${mins}m ${o._local?'· waiting to sync':(late?'· LATE':'')}</div>
     <div style="display:flex;gap:8px;margin-top:8px">
       <button class="btn ghost" style="padding:9px" onclick="bump('${idArg}',${o._local?'true':'false'})">✓ Bump</button>
