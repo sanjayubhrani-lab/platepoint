@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Customer Display · Tavo</title>
+<style>
+  :root{--bg:#0b0d12;--panel:#141821;--panel2:#1b2030;--line:#262c3a;--txt:#eef2f8;--mut:#8b94a7;--brand:#6366f1;--brand2:#a855f7;--green:#34d399}
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{background:radial-gradient(1200px 600px at 50% -10%,#1a1f33,transparent),var(--bg);color:var(--txt);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;display:flex;flex-direction:column;height:100vh;overflow:hidden}
+  header{display:flex;align-items:center;gap:14px;padding:22px 30px;border-bottom:1px solid var(--line)}
+  .logo{width:52px;height:52px;border-radius:14px;background:linear-gradient(135deg,var(--brand),var(--brand2));display:grid;place-items:center;font-size:26px;font-weight:800}
+  .biz{font-size:22px;font-weight:800}
+  .biz-sub{font-size:13px;color:var(--mut)}
+  main{flex:1;display:flex;overflow:hidden}
+  .items{flex:1;overflow-y:auto;padding:18px 30px}
+  .row{display:flex;align-items:baseline;gap:14px;padding:14px 0;border-bottom:1px solid var(--line);font-size:22px;animation:slide .25s ease}
+  @keyframes slide{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+  .row .q{min-width:46px;color:var(--brand2);font-weight:800}
+  .row .nm{flex:1}
+  .row .pr{font-weight:700}
+  aside{width:38%;max-width:460px;border-left:1px solid var(--line);background:var(--panel);padding:30px;display:flex;flex-direction:column;justify-content:flex-end}
+  .tline{display:flex;justify-content:space-between;font-size:18px;color:var(--mut);padding:6px 0}
+  .total{display:flex;justify-content:space-between;align-items:baseline;border-top:2px solid var(--line);margin-top:14px;padding-top:18px}
+  .total .lab{font-size:22px;font-weight:700}
+  .total .amt{font-size:54px;font-weight:900;letter-spacing:-1px}
+  .center{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;width:100%}
+  .welcome{font-size:46px;font-weight:900;margin-bottom:10px}
+  .welcome-sub{font-size:20px;color:var(--mut)}
+  .thanks{font-size:64px;font-weight:900;color:var(--green)}
+  .dot{display:inline-block;width:9px;height:9px;border-radius:50%;background:var(--green);margin-right:7px;vertical-align:middle;animation:pulse 1.6s infinite}
+  @keyframes pulse{0%,100%{opacity:.4}50%{opacity:1}}
+  .foot{padding:12px 30px;border-top:1px solid var(--line);color:var(--mut);font-size:12px;display:flex;justify-content:space-between}
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script>
+const params=new URLSearchParams(location.search);
+const TENANT=params.get('tenant')||'default';
+const money=n=>'$'+(Math.round((Number(n)||0)*100)/100).toFixed(2);
+const esc=s=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+let lastSig='', business='Tavo';
+
+function render(s){
+  const has=(s.lines||[]).length>0;
+  const thanks=!has && s.message;
+  const logo=(business||'T').trim().charAt(0).toUpperCase();
+  let body;
+  if(thanks){
+    body=`<main><div class="center"><div class="thanks">✓ ${esc(s.message)}</div>
+      <div class="welcome-sub" style="margin-top:16px">Have a wonderful day</div></div></main>`;
+  } else if(!has){
+    body=`<main><div class="center"><div class="welcome">Welcome 👋</div>
+      <div class="welcome-sub">Your order will appear here</div></div></main>`;
+  } else {
+    const rows=s.lines.map(l=>`<div class="row"><div class="q">${l.qty}×</div><div class="nm">${esc(l.name)}</div><div class="pr">${money(l.price*l.qty)}</div></div>`).join('');
+    body=`<main>
+      <div class="items">${rows}</div>
+      <aside>
+        <div class="tline"><span>Subtotal</span><span>${money(s.subtotal)}</span></div>
+        <div class="tline"><span>Tax</span><span>${money(s.tax)}</span></div>
+        <div class="total"><span class="lab">Total</span><span class="amt">${money(s.total)}</span></div>
+      </aside></main>`;
+  }
+  document.getElementById('app').innerHTML=`
+    <header><div class="logo">${logo}</div>
+      <div><div class="biz">${esc(business)}</div><div class="biz-sub">Customer display</div></div></header>
+    ${body}
+    <div class="foot"><span><span class="dot"></span>Live</span><span>Powered by Tavo</span></div>`;
+}
+
+async function poll(){
+  try{
+    const r=await fetch('/api/display?tenant='+encodeURIComponent(TENANT),{cache:'no-store'});
+    if(r.ok){ const s=await r.json(); business=s.business||business;
+      const sig=JSON.stringify([s.lines,s.total,s.message]);
+      if(sig!==lastSig){ lastSig=sig; render(s); } }
+  }catch(e){ /* keep last frame on transient errors */ }
+}
+render({lines:[],message:null});
+poll(); setInterval(poll,1500);
+</script>
+</body>
+</html>

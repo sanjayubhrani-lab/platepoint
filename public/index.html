@@ -291,6 +291,7 @@ async function render(){
   else if(route==="clock")v.innerHTML=await clockView();
   else if(route==="team")v.innerHTML=await teamView();
   else if(route==="settings")v.innerHTML=settingsView();
+  try{ pushDisplay(); }catch(e){}
 }
 
 /* ---- POS ---- */
@@ -821,6 +822,7 @@ function showReceipt(grand){
       <button class="btn ghost" onclick="digitalReceiptForm()">📲 Digital receipt</button>
       <button class="btn primary" onclick="closeModal();render()">Done</button></div></div>`);
   if(localStorage.getItem('pp_autoprint_receipt')==='1') setTimeout(printReceipt,150);
+  try{ pushDisplay({message:'Thank you!'}); }catch(e){}   // customer display shows thank-you
   toast('💰 '+money(grand)+' charged');
 }
 // Send a digital (email/SMS) receipt for the just-completed payment via the server.
@@ -989,6 +991,21 @@ function guestBase(){ return (IS_NATIVE?BACKEND_URL:location.origin); }
 function guestUrl(table){ const s=guestSlug(); let u=guestBase()+'/order.html?tenant='+encodeURIComponent(s); if(table!=null) u+='&table='+encodeURIComponent(table); return u; }
 function kioskUrl(){ return guestBase()+'/order.html?tenant='+encodeURIComponent(guestSlug())+'&kiosk=1'; }
 function launchKiosk(){ const w=window.open(kioskUrl(),'_blank'); if(!w){toast('Allow pop-ups to launch the kiosk');} }
+function displayUrl(){ return guestBase()+'/display.html?tenant='+encodeURIComponent(guestSlug()); }
+function launchDisplay(){ const w=window.open(displayUrl(),'_blank'); if(!w){toast('Allow pop-ups to open the display');} }
+// Mirror the active check to the customer-facing display (debounced by content signature).
+let _dispSig='';
+function pushDisplay(opts){
+  if(!ONLINE) return;
+  const t=totals(check);
+  const lines=check.map(l=>({name:l.name,qty:l.qty,price:l.price}));
+  const payload=opts&&opts.message!=null
+    ? {lines:[],subtotal:0,tax:0,total:0,message:opts.message}
+    : {lines,subtotal:t.sub,tax:t.tax,total:t.total,message:null};
+  const sig=JSON.stringify(payload);
+  if(sig===_dispSig) return; _dispSig=sig;
+  api('/display',{method:'POST',body:JSON.stringify(payload)}).catch(()=>{});
+}
 async function qrView(){
   const tables=await api('/tables').catch(()=>cacheGet('/tables')||[]);
   window._qrTables=tables;
@@ -2285,6 +2302,11 @@ function settingsView(){
         <div class="pill" style="display:flex;justify-content:space-between"><span>💳 Card terminal</span><b style="color:var(--green)">Connected</b></div>
         <div class="pill" style="display:flex;justify-content:space-between"><span>🖨️ Kitchen printer</span><b style="color:var(--green)">Online</b></div>
         <div class="pill" style="display:flex;justify-content:space-between"><span>📱 KDS screen</span><b style="color:var(--green)">Paired</b></div></div></div>
+    <div class="card"><div class="sec-title">🖥️ Customer display</div>
+      <p style="font-size:13px;color:var(--mut);line-height:1.6;margin:0 0 10px">Open this on a second screen facing the customer. It mirrors the active check in real time, then shows a thank-you after payment.</p>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn" style="flex:0;padding:10px 16px" onclick="launchDisplay()">🖥️ Open display</button>
+        <button class="btn ghost" style="flex:0;padding:10px 16px" onclick="copyLink(displayUrl())">🔗 Copy link</button></div></div>
     <div class="card"><div class="sec-title">About</div><p style="font-size:13px;color:var(--mut);line-height:1.6">Tavo POS — full-stack Toast-style point of sale. Backend: Node/Express + JSON store + Stripe. Replace the JSON store with Postgres and go live when ready.</p></div></div>`;
 }
 
