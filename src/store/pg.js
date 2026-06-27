@@ -20,6 +20,7 @@ const mMenu = r => ({ id: r.id, category: r.category, name: r.name, price: num(r
 const mVendor = r => ({ id: r.id, name: r.name, contact: r.contact ?? '', email: r.email ?? '', phone: r.phone ?? '', notes: r.notes ?? '', tenantId: r.tenant_id ?? DEFAULT_TENANT, createdAt: num(r.created_at) });
 const mPO = r => ({ id: r.id, vendorId: r.vendor_id ?? null, vendorName: r.vendor_name ?? '', status: r.status, lines: r.lines ?? [], total: num(r.total) || 0, notes: r.notes ?? '', receivedAt: r.received_at == null ? null : num(r.received_at), tenantId: r.tenant_id ?? DEFAULT_TENANT, createdAt: num(r.created_at) });
 const mStocktake = r => ({ id: r.id, name: r.name, status: r.status, counts: r.counts ?? [], tenantId: r.tenant_id ?? DEFAULT_TENANT, createdAt: num(r.created_at), closedAt: r.closed_at == null ? null : num(r.closed_at) });
+const mResv = r => ({ id: r.id, kind: r.kind, name: r.name, phone: r.phone ?? '', partySize: num(r.party_size) || 1, time: r.time == null ? null : num(r.time), quotedWait: r.quoted_wait == null ? null : num(r.quoted_wait), status: r.status, tableNumber: r.table_number == null ? null : num(r.table_number), notes: r.notes ?? '', tenantId: r.tenant_id ?? DEFAULT_TENANT, createdAt: num(r.created_at), seatedAt: r.seated_at == null ? null : num(r.seated_at) });
 const mInv = r => ({ id: r.id, name: r.name, unit: r.unit ?? 'unit', qty: num(r.qty) || 0, parLevel: num(r.par_level) || 0, cost: num(r.cost) || 0, tenantId: r.tenant_id ?? DEFAULT_TENANT });
 const mCust = r => ({ id: r.id, name: r.name, phone: r.phone, email: r.email ?? null, notes: r.notes ?? '', marketingOptIn: r.marketing_opt_in !== false, points: num(r.points) || 0, visits: num(r.visits) || 0, totalSpent: num(r.total_spent) || 0, tenantId: r.tenant_id ?? DEFAULT_TENANT, createdAt: num(r.created_at) });
 const mMsg = r => ({ id: r.id, channel: r.channel, kind: r.kind, to: r.to_addr, customerId: r.customer_id ?? null, campaignId: r.campaign_id ?? null, subject: r.subject ?? '', body: r.body ?? '', status: r.status, error: r.error ?? null, tenantId: r.tenant_id ?? DEFAULT_TENANT, createdAt: num(r.created_at) });
@@ -176,6 +177,11 @@ export async function makePgStore(poolOverride) {
         `CREATE TABLE IF NOT EXISTS stocktakes (
            id TEXT PRIMARY KEY, name TEXT, status TEXT DEFAULT 'open', counts JSONB DEFAULT '[]',
            tenant_id TEXT DEFAULT 'default', created_at BIGINT, closed_at BIGINT)`,
+        // reservations + waitlist
+        `CREATE TABLE IF NOT EXISTS reservations (
+           id TEXT PRIMARY KEY, kind TEXT DEFAULT 'reservation', name TEXT, phone TEXT, party_size INTEGER DEFAULT 1,
+           time BIGINT, quoted_wait INTEGER, status TEXT DEFAULT 'booked', table_number INTEGER, notes TEXT,
+           tenant_id TEXT DEFAULT 'default', created_at BIGINT, seated_at BIGINT)`,
       ];
       for (const u of upgrades) { try { await q(u); } catch { /* column already present */ } }
     },
@@ -197,7 +203,7 @@ export async function makePgStore(poolOverride) {
     async seedTenant(data) { await insertSeed(q, data); },
 
     async reset({ menu = [], tables = [], staff = [], users = [], inventory = [], tenants } = {}) {
-      for (const t of ['menu', 'tables', 'orders', 'payments', 'users', 'staff', 'inventory', 'customers', 'giftcards', 'drawers', 'shifts', 'messages', 'campaigns', 'vendors', 'purchase_orders', 'stocktakes', 'tenants'])
+      for (const t of ['menu', 'tables', 'orders', 'payments', 'users', 'staff', 'inventory', 'customers', 'giftcards', 'drawers', 'shifts', 'messages', 'campaigns', 'vendors', 'purchase_orders', 'stocktakes', 'reservations', 'tenants'])
         await q(`DELETE FROM ${t}`);
       const tlist = tenants || [{ id: DEFAULT_TENANT, name: 'Default', slug: DEFAULT_TENANT, plan: 'free', mode: 'restaurant', createdAt: Date.now() }];
       for (const t of tlist)
@@ -460,6 +466,22 @@ export async function makePgStore(poolOverride) {
       const cur = (await q('SELECT * FROM stocktakes WHERE id=$1', [id])).rows[0];
       if (!cur) return null; const n = { ...mStocktake(cur), ...patch };
       await q('UPDATE stocktakes SET name=$2,status=$3,counts=$4,closed_at=$5 WHERE id=$1', [id, n.name, n.status, JSON.stringify(n.counts ?? []), n.closedAt ?? null]);
+      return n;
+    },
+
+    // reservations + waitlist (tenant-scoped)
+    async listReservations(tenantId) { return (await q('SELECT * FROM reservations WHERE tenant_id=$1 ORDER BY COALESCE(time, created_at)', [T(tenantId)])).rows.map(mResv); },
+    async getReservation(id) { const r = (await q('SELECT * FROM reservations WHERE id=$1', [id])).rows[0]; return r ? mResv(r) : null; },
+    async createReservation(r) {
+      await q('INSERT INTO reservations(id,kind,name,phone,party_size,time,quoted_wait,status,table_number,notes,tenant_id,created_at,seated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)',
+        [r.id, r.kind ?? 'reservation', r.name, r.phone ?? '', r.partySize ?? 1, r.time ?? null, r.quotedWait ?? null, r.status ?? 'booked', r.tableNumber ?? null, r.notes ?? '', T(r.tenantId), r.createdAt ?? Date.now(), r.seatedAt ?? null]);
+      return r;
+    },
+    async updateReservation(id, patch) {
+      const cur = (await q('SELECT * FROM reservations WHERE id=$1', [id])).rows[0];
+      if (!cur) return null; const n = { ...mResv(cur), ...patch };
+      await q('UPDATE reservations SET kind=$2,name=$3,phone=$4,party_size=$5,time=$6,quoted_wait=$7,status=$8,table_number=$9,notes=$10,seated_at=$11 WHERE id=$1',
+        [id, n.kind, n.name, n.phone ?? '', n.partySize ?? 1, n.time ?? null, n.quotedWait ?? null, n.status, n.tableNumber ?? null, n.notes ?? '', n.seatedAt ?? null]);
       return n;
     },
   };

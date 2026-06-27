@@ -17,7 +17,7 @@ export function makeJsonStore() {
     async reset({ menu = [], tables = [], staff = [], users = [], inventory = [], tenants } = {}) {
       const db = read();
       db.menu = menu; db.tables = tables; db.staff = staff; db.users = users; db.inventory = inventory;
-      db.orders = []; db.payments = []; db.customers = []; db.giftcards = []; db.drawers = []; db.shifts = []; db.messages = []; db.campaigns = []; db.vendors = []; db.purchaseOrders = []; db.stocktakes = [];
+      db.orders = []; db.payments = []; db.customers = []; db.giftcards = []; db.drawers = []; db.shifts = []; db.messages = []; db.campaigns = []; db.vendors = []; db.purchaseOrders = []; db.stocktakes = []; db.reservations = [];
       db.tenants = tenants || [{ id: DEFAULT_TENANT, name: 'Default', slug: DEFAULT_TENANT, plan: 'free', createdAt: Date.now() }];
       write(db);
     },
@@ -150,5 +150,11 @@ export function makeJsonStore() {
     async getStocktake(id) { return (read().stocktakes || []).find(s => s.id === id) || null; },
     async createStocktake(s) { const db = read(); (db.stocktakes ||= []).push(s); write(db); return s; },
     async updateStocktake(id, patch) { const db = read(); const s = (db.stocktakes ||= []).find(x => x.id === id); if (!s) return null; Object.assign(s, patch); write(db); return s; },
+
+    // ---- reservations + waitlist (scoped) ----
+    async listReservations(tenantId) { return (read().reservations || []).filter(r => owns(r, tenantId)).sort((a, b) => (a.time || a.createdAt || 0) - (b.time || b.createdAt || 0)); },
+    async getReservation(id) { return (read().reservations || []).find(r => r.id === id) || null; },
+    async createReservation(r) { const db = read(); (db.reservations ||= []).push(r); write(db); return r; },
+    async updateReservation(id, patch) { const db = read(); const r = (db.reservations ||= []).find(x => x.id === id); if (!r) return null; Object.assign(r, patch); write(db); return r; },
   };
 }
