@@ -21,6 +21,8 @@ const mVendor = r => ({ id: r.id, name: r.name, contact: r.contact ?? '', email:
 const mPO = r => ({ id: r.id, vendorId: r.vendor_id ?? null, vendorName: r.vendor_name ?? '', status: r.status, lines: r.lines ?? [], total: num(r.total) || 0, notes: r.notes ?? '', receivedAt: r.received_at == null ? null : num(r.received_at), tenantId: r.tenant_id ?? DEFAULT_TENANT, createdAt: num(r.created_at) });
 const mStocktake = r => ({ id: r.id, name: r.name, status: r.status, counts: r.counts ?? [], tenantId: r.tenant_id ?? DEFAULT_TENANT, createdAt: num(r.created_at), closedAt: r.closed_at == null ? null : num(r.closed_at) });
 const mResv = r => ({ id: r.id, kind: r.kind, name: r.name, phone: r.phone ?? '', partySize: num(r.party_size) || 1, time: r.time == null ? null : num(r.time), quotedWait: r.quoted_wait == null ? null : num(r.quoted_wait), status: r.status, tableNumber: r.table_number == null ? null : num(r.table_number), notes: r.notes ?? '', tenantId: r.tenant_id ?? DEFAULT_TENANT, createdAt: num(r.created_at), seatedAt: r.seated_at == null ? null : num(r.seated_at) });
+const mHouse = r => ({ id: r.id, name: r.name, contact: r.contact ?? '', email: r.email ?? '', phone: r.phone ?? '', creditLimit: num(r.credit_limit) || 0, balance: num(r.balance) || 0, tenantId: r.tenant_id ?? DEFAULT_TENANT, createdAt: num(r.created_at) });
+const mInvoice = r => ({ id: r.id, accountId: r.account_id, accountName: r.account_name ?? '', lines: r.lines ?? [], total: num(r.total) || 0, status: r.status, dueDate: r.due_date == null ? null : num(r.due_date), notes: r.notes ?? '', tenantId: r.tenant_id ?? DEFAULT_TENANT, createdAt: num(r.created_at), paidAt: r.paid_at == null ? null : num(r.paid_at) });
 const mInv = r => ({ id: r.id, name: r.name, unit: r.unit ?? 'unit', qty: num(r.qty) || 0, parLevel: num(r.par_level) || 0, cost: num(r.cost) || 0, tenantId: r.tenant_id ?? DEFAULT_TENANT });
 const mCust = r => ({ id: r.id, name: r.name, phone: r.phone, email: r.email ?? null, notes: r.notes ?? '', marketingOptIn: r.marketing_opt_in !== false, points: num(r.points) || 0, visits: num(r.visits) || 0, totalSpent: num(r.total_spent) || 0, tenantId: r.tenant_id ?? DEFAULT_TENANT, createdAt: num(r.created_at) });
 const mMsg = r => ({ id: r.id, channel: r.channel, kind: r.kind, to: r.to_addr, customerId: r.customer_id ?? null, campaignId: r.campaign_id ?? null, subject: r.subject ?? '', body: r.body ?? '', status: r.status, error: r.error ?? null, tenantId: r.tenant_id ?? DEFAULT_TENANT, createdAt: num(r.created_at) });
@@ -184,6 +186,15 @@ export async function makePgStore(poolOverride) {
            id TEXT PRIMARY KEY, kind TEXT DEFAULT 'reservation', name TEXT, phone TEXT, party_size INTEGER DEFAULT 1,
            time BIGINT, quoted_wait INTEGER, status TEXT DEFAULT 'booked', table_number INTEGER, notes TEXT,
            tenant_id TEXT DEFAULT 'default', created_at BIGINT, seated_at BIGINT)`,
+        // house accounts + invoicing
+        `CREATE TABLE IF NOT EXISTS house_accounts (
+           id TEXT PRIMARY KEY, name TEXT, contact TEXT, email TEXT, phone TEXT,
+           credit_limit NUMERIC(12,2) DEFAULT 0, balance NUMERIC(12,2) DEFAULT 0,
+           tenant_id TEXT DEFAULT 'default', created_at BIGINT)`,
+        `CREATE TABLE IF NOT EXISTS invoices (
+           id TEXT PRIMARY KEY, account_id TEXT, account_name TEXT, lines JSONB DEFAULT '[]',
+           total NUMERIC(12,2) DEFAULT 0, status TEXT DEFAULT 'open', due_date BIGINT, notes TEXT,
+           tenant_id TEXT DEFAULT 'default', created_at BIGINT, paid_at BIGINT)`,
       ];
       for (const u of upgrades) { try { await q(u); } catch { /* column already present */ } }
     },
@@ -205,7 +216,7 @@ export async function makePgStore(poolOverride) {
     async seedTenant(data) { await insertSeed(q, data); },
 
     async reset({ menu = [], tables = [], staff = [], users = [], inventory = [], tenants } = {}) {
-      for (const t of ['menu', 'tables', 'orders', 'payments', 'users', 'staff', 'inventory', 'customers', 'giftcards', 'drawers', 'shifts', 'messages', 'campaigns', 'vendors', 'purchase_orders', 'stocktakes', 'reservations', 'tenants'])
+      for (const t of ['menu', 'tables', 'orders', 'payments', 'users', 'staff', 'inventory', 'customers', 'giftcards', 'drawers', 'shifts', 'messages', 'campaigns', 'vendors', 'purchase_orders', 'stocktakes', 'reservations', 'house_accounts', 'invoices', 'tenants'])
         await q(`DELETE FROM ${t}`);
       const tlist = tenants || [{ id: DEFAULT_TENANT, name: 'Default', slug: DEFAULT_TENANT, plan: 'free', mode: 'restaurant', createdAt: Date.now() }];
       for (const t of tlist)
@@ -484,6 +495,37 @@ export async function makePgStore(poolOverride) {
       if (!cur) return null; const n = { ...mResv(cur), ...patch };
       await q('UPDATE reservations SET kind=$2,name=$3,phone=$4,party_size=$5,time=$6,quoted_wait=$7,status=$8,table_number=$9,notes=$10,seated_at=$11 WHERE id=$1',
         [id, n.kind, n.name, n.phone ?? '', n.partySize ?? 1, n.time ?? null, n.quotedWait ?? null, n.status, n.tableNumber ?? null, n.notes ?? '', n.seatedAt ?? null]);
+      return n;
+    },
+
+    // house accounts (tenant-scoped)
+    async listHouseAccounts(tenantId) { return (await q('SELECT * FROM house_accounts WHERE tenant_id=$1 ORDER BY name', [T(tenantId)])).rows.map(mHouse); },
+    async getHouseAccount(id) { const r = (await q('SELECT * FROM house_accounts WHERE id=$1', [id])).rows[0]; return r ? mHouse(r) : null; },
+    async createHouseAccount(a) {
+      await q('INSERT INTO house_accounts(id,name,contact,email,phone,credit_limit,balance,tenant_id,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)',
+        [a.id, a.name, a.contact ?? '', a.email ?? '', a.phone ?? '', a.creditLimit ?? 0, a.balance ?? 0, T(a.tenantId), a.createdAt ?? Date.now()]);
+      return a;
+    },
+    async updateHouseAccount(id, patch) {
+      const cur = (await q('SELECT * FROM house_accounts WHERE id=$1', [id])).rows[0];
+      if (!cur) return null; const n = { ...mHouse(cur), ...patch };
+      await q('UPDATE house_accounts SET name=$2,contact=$3,email=$4,phone=$5,credit_limit=$6,balance=$7 WHERE id=$1',
+        [id, n.name, n.contact ?? '', n.email ?? '', n.phone ?? '', n.creditLimit ?? 0, n.balance ?? 0]);
+      return n;
+    },
+
+    // invoices (tenant-scoped)
+    async listInvoices(tenantId) { return (await q('SELECT * FROM invoices WHERE tenant_id=$1 ORDER BY created_at DESC', [T(tenantId)])).rows.map(mInvoice); },
+    async getInvoice(id) { const r = (await q('SELECT * FROM invoices WHERE id=$1', [id])).rows[0]; return r ? mInvoice(r) : null; },
+    async createInvoice(i) {
+      await q('INSERT INTO invoices(id,account_id,account_name,lines,total,status,due_date,notes,tenant_id,created_at,paid_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)',
+        [i.id, i.accountId, i.accountName ?? '', JSON.stringify(i.lines ?? []), i.total ?? 0, i.status ?? 'open', i.dueDate ?? null, i.notes ?? '', T(i.tenantId), i.createdAt ?? Date.now(), i.paidAt ?? null]);
+      return i;
+    },
+    async updateInvoice(id, patch) {
+      const cur = (await q('SELECT * FROM invoices WHERE id=$1', [id])).rows[0];
+      if (!cur) return null; const n = { ...mInvoice(cur), ...patch };
+      await q('UPDATE invoices SET status=$2,paid_at=$3,notes=$4 WHERE id=$1', [id, n.status, n.paidAt ?? null, n.notes ?? '']);
       return n;
     },
   };

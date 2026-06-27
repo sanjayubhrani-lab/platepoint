@@ -17,7 +17,7 @@ export function makeJsonStore() {
     async reset({ menu = [], tables = [], staff = [], users = [], inventory = [], tenants } = {}) {
       const db = read();
       db.menu = menu; db.tables = tables; db.staff = staff; db.users = users; db.inventory = inventory;
-      db.orders = []; db.payments = []; db.customers = []; db.giftcards = []; db.drawers = []; db.shifts = []; db.messages = []; db.campaigns = []; db.vendors = []; db.purchaseOrders = []; db.stocktakes = []; db.reservations = [];
+      db.orders = []; db.payments = []; db.customers = []; db.giftcards = []; db.drawers = []; db.shifts = []; db.messages = []; db.campaigns = []; db.vendors = []; db.purchaseOrders = []; db.stocktakes = []; db.reservations = []; db.houseAccounts = []; db.invoices = [];
       db.tenants = tenants || [{ id: DEFAULT_TENANT, name: 'Default', slug: DEFAULT_TENANT, plan: 'free', createdAt: Date.now() }];
       write(db);
     },
@@ -156,5 +156,17 @@ export function makeJsonStore() {
     async getReservation(id) { return (read().reservations || []).find(r => r.id === id) || null; },
     async createReservation(r) { const db = read(); (db.reservations ||= []).push(r); write(db); return r; },
     async updateReservation(id, patch) { const db = read(); const r = (db.reservations ||= []).find(x => x.id === id); if (!r) return null; Object.assign(r, patch); write(db); return r; },
+
+    // ---- house accounts (scoped) ----
+    async listHouseAccounts(tenantId) { return (read().houseAccounts || []).filter(a => owns(a, tenantId)).sort((a, b) => (a.name || '').localeCompare(b.name || '')); },
+    async getHouseAccount(id) { return (read().houseAccounts || []).find(a => a.id === id) || null; },
+    async createHouseAccount(a) { const db = read(); (db.houseAccounts ||= []).push(a); write(db); return a; },
+    async updateHouseAccount(id, patch) { const db = read(); const a = (db.houseAccounts ||= []).find(x => x.id === id); if (!a) return null; Object.assign(a, patch); write(db); return a; },
+
+    // ---- invoices (scoped) ----
+    async listInvoices(tenantId) { return (read().invoices || []).filter(i => owns(i, tenantId)).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)); },
+    async getInvoice(id) { return (read().invoices || []).find(i => i.id === id) || null; },
+    async createInvoice(i) { const db = read(); (db.invoices ||= []).push(i); write(db); return i; },
+    async updateInvoice(id, patch) { const db = read(); const i = (db.invoices ||= []).find(x => x.id === id); if (!i) return null; Object.assign(i, patch); write(db); return i; },
   };
 }
