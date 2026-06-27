@@ -1114,6 +1114,31 @@ app.post('/api/invoices/:id/pay', requireAuth, requireRole('manager'), h(async (
   res.json(out);
 }));
 
+// ============================================================================
+//  Customer-facing display — the POS pushes the live cart; a second screen polls it.
+//  State is ephemeral (in-memory, per tenant) — exactly what a counter display needs.
+// ============================================================================
+const displayState = new Map();   // tenantId -> { lines, subtotal, tax, total, message, updatedAt }
+
+// POS pushes the current check (or a thank-you/idle message).
+app.post('/api/display', requireAuth, h(async (req, res) => {
+  const { lines = [], subtotal = 0, tax = 0, total = 0, message = null } = req.body;
+  displayState.set(tid(req), {
+    lines: Array.isArray(lines) ? lines.slice(0, 60).map(l => ({ name: String(l.name || ''), qty: Number(l.qty) || 0, price: Number(l.price) || 0 })) : [],
+    subtotal: round(Number(subtotal) || 0), tax: round(Number(tax) || 0), total: round(Number(total) || 0),
+    message: message ? String(message).slice(0, 120) : null, updatedAt: Date.now(),
+  });
+  res.json({ ok: true });
+}));
+
+// The display device polls this (public — no login on the customer screen).
+app.get('/api/display', h(async (req, res) => {
+  const t = await resolveTenant(req.query.tenant);
+  if (!t) return res.status(404).json({ error: 'unknown business' });
+  const s = displayState.get(t.id) || { lines: [], subtotal: 0, tax: 0, total: 0, message: null, updatedAt: 0 };
+  res.json({ business: t.name, ...s });
+}));
+
 // ---- loyalty config ----
 app.get('/api/loyalty/config', requireAuth, (req, res) =>
   res.json({ earnRate: LOYALTY_EARN, redeemRate: LOYALTY_REDEEM }));
