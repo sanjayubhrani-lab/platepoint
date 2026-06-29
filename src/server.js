@@ -43,6 +43,40 @@ async function resolveTenant(slug) {
 
 app.use(cors());
 
+// ---- security headers (lightweight, no extra deps) ----
+const PROD = process.env.NODE_ENV === 'production';
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.setHeader('X-DNS-Prefetch-Control', 'off');
+  res.setHeader('Permissions-Policy', 'geolocation=(), microphone=(), camera=()');
+  if (PROD) res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  next();
+});
+
+// ---- brute-force throttle for PIN login (in-memory, per IP+tenant) ----
+// PINs are short, so cap attempts: after MAX failures in WINDOW, lock for LOCK ms.
+const LOGIN_MAX = parseInt(process.env.LOGIN_MAX_ATTEMPTS || '12', 10);
+const LOGIN_WINDOW = 15 * 60 * 1000;   // 15 min
+const LOGIN_LOCK = 15 * 60 * 1000;     // 15 min lockout
+const loginHits = new Map();           // key -> { count, first, lockUntil }
+function loginThrottle(req, res, next) {
+  const key = (req.ip || 'ip') + '|' + (req.body && req.body.tenant || 'default');
+  const now = Date.now();
+  let e = loginHits.get(key);
+  if (e && e.lockUntil && now < e.lockUntil)
+    return res.status(429).json({ error: 'Too many attempts — try again in a few minutes.' });
+  if (!e || now - e.first > LOGIN_WINDOW) { e = { count: 0, first: now, lockUntil: 0 }; loginHits.set(key, e); }
+  req._loginKey = key;   // login handler clears this on success
+  if (e.count >= LOGIN_MAX) { e.lockUntil = now + LOGIN_LOCK; return res.status(429).json({ error: 'Too many attempts — locked for 15 minutes.' }); }
+  e.count++;
+  next();
+}
+function loginSucceeded(req) { if (req._loginKey) loginHits.delete(req._loginKey); }   // reset on success
+// occasional cleanup so the map can't grow unbounded
+setInterval(() => { const now = Date.now(); for (const [k, e] of loginHits) if (now - e.first > LOGIN_WINDOW && (!e.lockUntil || now > e.lockUntil)) loginHits.delete(k); }, 10 * 60 * 1000).unref?.();
+
 // ---- Stripe webhook (MUST be registered with the raw body, before express.json) ----
 app.post('/api/webhooks/stripe', express.raw({ type: 'application/json' }), h(async (req, res) => {
   const secret = process.env.STRIPE_WEBHOOK_SECRET;
@@ -205,7 +239,7 @@ app.post('/api/tenants', h(async (req, res) => {
 }));
 
 // ---- auth ----
-app.post('/api/auth/login', h(async (req, res) => {
+app.post('/api/auth/login', loginThrottle, h(async (req, res) => {
   const { pin, tenant } = req.body;
   if (!pin) return res.status(400).json({ error: 'PIN required' });
   let tenantId = DEFAULT_TENANT, tenantSlug = DEFAULT_TENANT, tenantName = 'Tavo', tenantMode = 'restaurant';
@@ -220,6 +254,7 @@ app.post('/api/auth/login', h(async (req, res) => {
   const users = await store.listUsers(tenantId);
   const user = users.find(u => verifyPin(pin, u.pinHash));
   if (!user) return res.status(401).json({ error: 'Invalid PIN' });
+  loginSucceeded(req);   // clear the throttle counter on a good login
   const token = issueToken({ ...user, tenantId, tenantSlug, tenantName, tenantMode });
   res.json({ token, user: { id: user.id, name: user.name, role: user.role, tenantId, tenantSlug, tenantName, tenantMode, routes: ROLE_ROUTES[user.role] || [] } });
 }));
@@ -1580,6 +1615,14 @@ app.get('/api/tips/pool', requireAuth, requireRole('manager'), h(async (req, res
 app.get('/api/staff', requireAuth, requireRole('manager'), h(async (req, res) => res.json(await store.listStaff(tid(req)))));
 
 async function start() {
+  // Refuse to boot in production without a strong, non-default JWT secret —
+  // a weak secret would let anyone forge staff/manager sessions.
+  const jwt = process.env.JWT_SECRET || '';
+  if (PROD && (jwt.length < 24 || jwt === 'dev-only-change-me')) {
+    console.error('FATAL: set a strong JWT_SECRET (>=24 chars) before running in production.');
+    process.exit(1);
+  }
+  if (!PROD && jwt.length < 24) console.warn('[security] JWT_SECRET is weak/unset — fine for dev, REQUIRED in production.');
   store = await getStore();             // getStore() runs schema migration in init()
   // Auto-seed a brand-new (empty) database so fresh deploys work out of the box.
   // Existing data is never touched. Disable with AUTO_SEED=false.
