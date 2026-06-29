@@ -17,7 +17,7 @@ export function makeJsonStore() {
     async reset({ menu = [], tables = [], staff = [], users = [], inventory = [], tenants } = {}) {
       const db = read();
       db.menu = menu; db.tables = tables; db.staff = staff; db.users = users; db.inventory = inventory;
-      db.orders = []; db.payments = []; db.customers = []; db.giftcards = []; db.drawers = []; db.shifts = []; db.messages = []; db.campaigns = []; db.vendors = []; db.purchaseOrders = []; db.stocktakes = []; db.reservations = []; db.houseAccounts = []; db.invoices = []; db.locations = [];
+      db.orders = []; db.payments = []; db.customers = []; db.giftcards = []; db.drawers = []; db.shifts = []; db.messages = []; db.campaigns = []; db.vendors = []; db.purchaseOrders = []; db.stocktakes = []; db.reservations = []; db.houseAccounts = []; db.invoices = []; db.locations = []; db.discountPresets = [];
       db.tenants = tenants || [{ id: DEFAULT_TENANT, name: 'Default', slug: DEFAULT_TENANT, plan: 'free', createdAt: Date.now() }];
       write(db);
     },
@@ -175,5 +175,12 @@ export function makeJsonStore() {
     async createLocation(l) { const db = read(); (db.locations ||= []).push(l); write(db); return l; },
     async updateLocation(id, patch) { const db = read(); const l = (db.locations ||= []).find(x => x.id === id); if (!l) return null; Object.assign(l, patch); write(db); return l; },
     async deleteLocation(id) { const db = read(); db.locations = (db.locations || []).filter(l => l.id !== id); write(db); },
+
+    // ---- discount presets + scheduled (happy-hour) discounts (scoped) ----
+    async listDiscountPresets(tenantId) { return (read().discountPresets || []).filter(d => owns(d, tenantId)).sort((a, b) => (a.name || '').localeCompare(b.name || '')); },
+    async getDiscountPreset(id) { return (read().discountPresets || []).find(d => d.id === id) || null; },
+    async createDiscountPreset(d) { const db = read(); (db.discountPresets ||= []).push(d); write(db); return d; },
+    async updateDiscountPreset(id, patch) { const db = read(); const d = (db.discountPresets ||= []).find(x => x.id === id); if (!d) return null; Object.assign(d, patch); write(db); return d; },
+    async deleteDiscountPreset(id) { const db = read(); db.discountPresets = (db.discountPresets || []).filter(d => d.id !== id); write(db); },
   };
 }
